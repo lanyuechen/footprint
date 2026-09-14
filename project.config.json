@@ -2,9 +2,9 @@
   "miniprogramRoot": "dist/",
   "projectname": "footprint",
   "description": "旅游规划工具",
-  "appid": "wxcd264ad93cfa9103",
+  "appid": "wxad1e0df59dfd30f8",
   "setting": {
-    "urlCheck": true,
+    "urlCheck": false,
     "es6": false,
     "enhance": false,
     "compileHotReLoad": false,

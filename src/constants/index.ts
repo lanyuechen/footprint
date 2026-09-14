@@ -14,6 +14,10 @@ export const AMAP_CONFIG = {
 
 export const STORAGE_KEYS = {
   APP_DATA: 'footprint_app_data_v1',
+  /** 导航页上次选择的出行方式 */
+  LAST_NAV_MODE: 'footprint_last_nav_mode_v1',
+  /** 计划视图页上次选择的视图 */
+  LAST_PLAN_VIEW: 'footprint_last_plan_view_v1',
 } as const
 
 export const DATA_VERSION = 1

@@ -2,13 +2,14 @@ export default defineAppConfig({
   pages: [
     'pages/index/index',
     'pages/plan-edit/index',
-    'pages/plan-detail/index',
-    'pages/point-edit/index',
+    'pages/plan-view/index',
+    'pages/nav/index',
+    'pages/point-note/index',
   ],
   window: {
     backgroundTextStyle: 'light',
     navigationBarBackgroundColor: '#1a5f4a',
-    navigationBarTitleText: '足迹规划',
+    navigationBarTitleText: '我的计划',
     navigationBarTextStyle: 'white',
     backgroundColor: '#f5f6f7',
   },

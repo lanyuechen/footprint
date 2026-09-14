@@ -42,7 +42,7 @@ export default function PlanEditPage() {
       const plan = createPlan({ name, description })
       Taro.showToast({ title: '已创建', icon: 'success' })
       setTimeout(() => {
-        Taro.redirectTo({ url: `/pages/plan-detail/index?id=${plan.id}` })
+        Taro.redirectTo({ url: `/pages/plan-view/index?id=${plan.id}` })
       }, 500)
     }
   }

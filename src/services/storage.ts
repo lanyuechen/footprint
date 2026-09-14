@@ -136,9 +136,10 @@ export function createPoint(input: {
   return point
 }
 
-export function updatePoint(
+/** 更新目标点备注，也可同时改预期时间 */
+export function updatePointNote(
   pointId: string,
-  input: { place: TargetPoint['place']; expectedAt: string },
+  input: { noteHtml: string; noteText: string; expectedAt?: string },
 ): TargetPoint | undefined {
   const store = readStore()
   const idx = store.points.findIndex((p) => p.id === pointId)
@@ -146,8 +147,9 @@ export function updatePoint(
   const ts = nowIso()
   const point: TargetPoint = {
     ...store.points[idx],
-    place: input.place,
-    expectedAt: input.expectedAt,
+    noteHtml: input.noteHtml,
+    noteText: input.noteText.trim(),
+    expectedAt: input.expectedAt || store.points[idx].expectedAt,
     updatedAt: ts,
   }
   store.points[idx] = point
@@ -169,4 +171,24 @@ export function deletePoint(pointId: string): boolean {
   }
   writeStore(store)
   return true
+}
+
+export type PlanViewMode = 'map' | 'timeline'
+
+export function getLastPlanView(): PlanViewMode {
+  try {
+    const raw = Taro.getStorageSync(STORAGE_KEYS.LAST_PLAN_VIEW)
+    if (raw === 'map' || raw === 'timeline') return raw
+  } catch {
+    // ignore
+  }
+  return 'timeline'
+}
+
+export function setLastPlanView(view: PlanViewMode) {
+  try {
+    Taro.setStorageSync(STORAGE_KEYS.LAST_PLAN_VIEW, view)
+  } catch {
+    // ignore
+  }
 }

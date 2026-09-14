@@ -23,7 +23,7 @@ export default function IndexPage() {
   }
 
   const goDetail = (id: string) => {
-    Taro.navigateTo({ url: `/pages/plan-detail/index?id=${id}` })
+    Taro.navigateTo({ url: `/pages/plan-view/index?id=${id}` })
   }
 
   const goEdit = (id: string) => {
@@ -45,8 +45,7 @@ export default function IndexPage() {
   return (
     <View className='index'>
       <View className='header'>
-        <Text className='header__title'>足迹规划</Text>
-        <Text className='header__sub'>本地旅行计划，按时间安排去处</Text>
+        <Text className='header__title'>我的计划</Text>
       </View>
 
       {plans.length === 0 ? (
