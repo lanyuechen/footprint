@@ -1,0 +1,18 @@
+page {
+  background-color: #f5f6f7;
+  color: #1f2329;
+  font-size: 28px;
+  box-sizing: border-box;
+}
+
+view,
+text,
+button,
+input,
+textarea {
+  box-sizing: border-box;
+}
+
+button::after {
+  border: none;
+}
