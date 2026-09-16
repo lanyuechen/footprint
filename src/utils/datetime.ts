@@ -48,6 +48,26 @@ export function formatClock(iso: string): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** 收藏地点起止日的历时天数（含首尾当天）；没有有效时间则为 0 */
+export function spanDays(isos: string[]): number {
+  let start: number | null = null
+  let end: number | null = null
+  for (const iso of isos) {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) continue
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+    if (start == null || day < start) start = day
+    if (end == null || day > end) end = day
+  }
+  if (start == null || end == null) return 0
+  return Math.round((end - start) / 86400000) + 1
+}
+
+/** 计划摘要：m 个地点 · n 天 */
+export function formatPlanSummary(placeCount: number, days: number): string {
+  return `${placeCount} 个地点 · ${days} 天`
+}
+
 /** 按本地日期分组的 key：YYYY-M-D */
 export function dayKey(iso: string): string {
   const d = new Date(iso)

@@ -23,7 +23,13 @@ export default defineConfig<'webpack5'>(async (merge) => {
       options: {},
     },
     framework: 'react',
-    compiler: 'webpack5',
+    compiler: {
+      type: 'webpack5',
+      // Taro 4.0.9 把 roots 传成字符串，enhanced-resolve 5.23+ 只接受数组，预编译会直接报错
+      prebundle: {
+        enable: false,
+      },
+    },
     cache: {
       enable: false,
     },

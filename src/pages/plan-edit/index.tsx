@@ -39,11 +39,9 @@ export default function PlanEditPage() {
       Taro.showToast({ title: '已保存', icon: 'success' })
       setTimeout(() => Taro.navigateBack(), 500)
     } else {
-      const plan = createPlan({ name, description })
+      createPlan({ name, description })
       Taro.showToast({ title: '已创建', icon: 'success' })
-      setTimeout(() => {
-        Taro.redirectTo({ url: `/pages/plan-view/index?id=${plan.id}` })
-      }, 500)
+      setTimeout(() => Taro.navigateBack(), 500)
     }
   }
 

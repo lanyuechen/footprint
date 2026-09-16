@@ -159,6 +159,24 @@ export function updatePointNote(
   return point
 }
 
+/** 把地点改到指定时间。同一小时已有地点时，排在它们后面 */
+export function updatePointExpectedAt(pointId: string, expectedAt: string): TargetPoint | undefined {
+  const store = readStore()
+  const idx = store.points.findIndex((p) => p.id === pointId)
+  if (idx < 0) return undefined
+  const ts = nowIso()
+  const point: TargetPoint = {
+    ...store.points[idx],
+    expectedAt,
+    updatedAt: ts,
+  }
+  store.points[idx] = point
+  const plan = store.plans.find((p) => p.id === point.planId)
+  if (plan) plan.updatedAt = ts
+  writeStore(store)
+  return point
+}
+
 export function deletePoint(pointId: string): boolean {
   const store = readStore()
   const point = store.points.find((p) => p.id === pointId)
