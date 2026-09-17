@@ -1,11 +1,12 @@
-import { View, Text, Input, ScrollView } from '@tarojs/components'
+import { View, Text, Input, ScrollView, RichText } from '@tarojs/components'
+import { useState } from 'react'
 import Taro from '@tarojs/taro'
 import { Navigation } from 'lucide-react-taro/icons/navigation'
-import { SquarePen } from 'lucide-react-taro/icons/square-pen'
+import { MapPin } from 'lucide-react-taro/icons/map-pin'
 import { Star } from 'lucide-react-taro/icons/star'
 import type { PlaceInfo, TargetPoint } from '../../types'
 import { formatDateTime, formatDistance } from '../../utils/datetime'
-import { isSamePlace } from './place-info'
+import { isSamePlace, placeInfoRows } from './place-info'
 import { PlanMap } from './PlanMap'
 import type { MapUiMode, PreviewKind, SheetPos } from './types'
 
@@ -45,13 +46,58 @@ export type MapStageProps = {
   searching: boolean
   hasSearched: boolean
   results: PlaceInfo[]
-  onSelectPlace: (item: PlaceInfo) => void
+  onSelectPlace: (item: PlaceInfo, source?: 'map' | 'list') => void
   points: TargetPoint[]
   inSearchUi: boolean
   deferredUncollectIds: Set<string>
   selectedPlace: PlaceInfo | null
+  mapPickedPlace: PlaceInfo | null
   focusPointOnMap: (point: TargetPoint) => void
   onToggleCollectedListStar: (point: TargetPoint) => void
+}
+
+function highlightParts(text: string, keyword: string) {
+  const source = text || ''
+  const q = keyword.trim()
+  if (!q || !source) return [{ text: source, hit: false }]
+  const hay = source.toLowerCase()
+  const needle = q.toLowerCase()
+  const parts: Array<{ text: string; hit: boolean }> = []
+  let cursor = 0
+  let index = hay.indexOf(needle)
+  while (index >= 0) {
+    if (index > cursor) parts.push({ text: source.slice(cursor, index), hit: false })
+    parts.push({ text: source.slice(index, index + q.length), hit: true })
+    cursor = index + q.length
+    index = hay.indexOf(needle, cursor)
+  }
+  if (cursor < source.length) parts.push({ text: source.slice(cursor), hit: false })
+  return parts.length > 0 ? parts : [{ text: source, hit: false }]
+}
+
+function HighlightText({
+  text,
+  keyword,
+  className,
+}: {
+  text: string
+  keyword: string
+  className: string
+}) {
+  const parts = highlightParts(text, keyword)
+  return (
+    <Text className={className}>
+      {parts.map((part, index) =>
+        part.hit ? (
+          <Text key={index} className='sheet-point__hit'>
+            {part.text}
+          </Text>
+        ) : (
+          part.text
+        ),
+      )}
+    </Text>
+  )
 }
 
 export function MapStage(props: MapStageProps) {
@@ -90,9 +136,24 @@ export function MapStage(props: MapStageProps) {
     inSearchUi,
     deferredUncollectIds,
     selectedPlace,
+    mapPickedPlace,
     focusPointOnMap,
     onToggleCollectedListStar,
   } = props
+  const [expandedId, setExpandedId] = useState('')
+  const mapPickedActive =
+    !!mapPickedPlace &&
+    !!selectedPlace &&
+    isSamePlace(mapPickedPlace, selectedPlace)
+  const mapPickedInCollected =
+    !!mapPickedPlace &&
+    points.some((point) => isSamePlace(point.place, mapPickedPlace))
+  const mapPickedInResults =
+    !!mapPickedPlace &&
+    showSearchResults &&
+    results.some((item) => isSamePlace(item, mapPickedPlace))
+  const showMapPickedCard =
+    !!mapPickedPlace && !mapPickedInCollected && !mapPickedInResults
   return (
 <View className='map-stage'>
   <PlanMap
@@ -152,15 +213,6 @@ export function MapStage(props: MapStageProps) {
         onTouchCancel={onSheetTouchEnd as never}
       >
         <View
-          className='sheet__cancel'
-          onClick={(e) => {
-            e.stopPropagation()
-            goToBottom()
-          }}
-        >
-          关闭
-        </View>
-        <View
           className='sheet__input-wrap'
           onClick={(e) => {
             e.stopPropagation()
@@ -178,6 +230,15 @@ export function MapStage(props: MapStageProps) {
             onBlur={onSearchBlur}
           />
         </View>
+        <View
+          className='sheet__cancel'
+          onClick={(e) => {
+            e.stopPropagation()
+            goToBottom()
+          }}
+        >
+          关闭
+        </View>
       </View>
     )}
 
@@ -192,6 +253,43 @@ export function MapStage(props: MapStageProps) {
       >
         <View className='sheet__body-inner'>
         <View id='sheet-scroll-top' />
+        {showMapPickedCard && mapPickedPlace && (
+          <>
+            <View className='sheet__section-title'>选中地点</View>
+            <View
+              className={`sheet-point ${mapPickedActive ? 'sheet-point--active' : ''}`}
+              onClick={() => onSelectPlace(mapPickedPlace, 'map')}
+            >
+              <View className='sheet-point__row'>
+                <View className='sheet-point__index sheet-point__index--pin'>
+                  <MapPin size={16} color={mapPickedActive ? '#ffffff' : '#1a5f4a'} />
+                </View>
+                <View className='sheet-point__body'>
+                  <View className='sheet-point__name'>{mapPickedPlace.name}</View>
+                  {!!mapPickedPlace.address && (
+                    <View className='sheet-point__addr'>{mapPickedPlace.address}</View>
+                  )}
+                  {!!formatDistance(mapPickedPlace.distanceMeters) && (
+                    <View className='sheet-point__time'>
+                      {formatDistance(mapPickedPlace.distanceMeters)}
+                    </View>
+                  )}
+                </View>
+                <View
+                  className='sheet-point__actions'
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <View
+                    className='collect-star'
+                    onClick={() => onCollectSearchPlace(mapPickedPlace)}
+                  >
+                    <Star size={18} color='#eab308' filled={false} />
+                  </View>
+                </View>
+              </View>
+            </View>
+          </>
+        )}
         {showSearchResults && (
           <>
             <View className='sheet__section-title'>
@@ -206,33 +304,45 @@ export function MapStage(props: MapStageProps) {
                   isSamePlace(point.place, item) && !deferredUncollectIds.has(point.id),
               )
               const selected =
-                previewKind === 'search' &&
                 !!selectedPlace &&
-                isSamePlace(item, selectedPlace)
+                isSamePlace(item, selectedPlace) &&
+                (previewKind === 'search' ||
+                  (!!mapPickedPlace && isSamePlace(mapPickedPlace, item)))
               const distance = formatDistance(item.distanceMeters)
               return (
               <View
+                id={`search-result-${index}`}
                 key={`${item.poiId || item.name}-${item.longitude}-${item.latitude}`}
                 className={`sheet-point ${selected ? 'sheet-point--active' : ''}`}
                 onClick={() => onSelectPlace(item)}
               >
-                <Text className='sheet-point__index'>{index + 1}</Text>
-                <View className='sheet-point__body'>
-                  <View className='sheet-point__name'>{item.name}</View>
-                  <View className='sheet-point__addr'>{item.address}</View>
-                  {!!distance && (
-                    <View className='sheet-point__time'>{distance}</View>
-                  )}
-                </View>
-                <View
-                  className='sheet-point__actions'
-                  onClick={(e) => e.stopPropagation()}
-                >
+                <View className='sheet-point__row'>
+                  <Text className='sheet-point__index'>{index + 1}</Text>
+                  <View className='sheet-point__body'>
+                    <HighlightText
+                      className='sheet-point__name'
+                      text={item.name}
+                      keyword={keyword}
+                    />
+                    <HighlightText
+                      className='sheet-point__addr'
+                      text={item.address}
+                      keyword={keyword}
+                    />
+                    {!!distance && (
+                      <View className='sheet-point__time'>{distance}</View>
+                    )}
+                  </View>
                   <View
-                    className='collect-star'
-                    onClick={() => onCollectSearchPlace(item)}
+                    className='sheet-point__actions'
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    <Star size={18} color='#eab308' filled={collected} />
+                    <View
+                      className='collect-star'
+                      onClick={() => onCollectSearchPlace(item)}
+                    >
+                      <Star size={18} color='#eab308' filled={collected} />
+                    </View>
                   </View>
                 </View>
               </View>
@@ -255,66 +365,85 @@ export function MapStage(props: MapStageProps) {
             const collected = !deferredUncollectIds.has(point.id)
             const active =
               mapUi === 'preview' &&
-              previewKind === 'collected' &&
               !!selectedPlace &&
-              isSamePlace(point.place, selectedPlace)
+              isSamePlace(point.place, selectedPlace) &&
+              (previewKind === 'collected' ||
+                (!!mapPickedPlace && isSamePlace(mapPickedPlace, point.place)))
+            const open = active && expandedId === point.id
             return (
             <View
               id={`collected-${point.id}`}
               key={point.id}
-              className={`sheet-point ${
-                active ? 'sheet-point--active' : ''
+              className={`sheet-point ${active ? 'sheet-point--active' : ''} ${
+                open ? 'sheet-point--open' : ''
               }`}
-              onClick={() => focusPointOnMap(point)}
+              onClick={() => {
+                if (!active) {
+                  setExpandedId('')
+                  focusPointOnMap(point)
+                  return
+                }
+                setExpandedId(open ? '' : point.id)
+              }}
             >
-              <Text className='sheet-point__index'>{index + 1}</Text>
-              <View className='sheet-point__body'>
-                <View className='sheet-point__name'>
-                  {point.place.name}
+              <View className='sheet-point__row'>
+                <Text className='sheet-point__index'>{index + 1}</Text>
+                <View className='sheet-point__body'>
+                  <View className='sheet-point__name'>
+                    {point.place.name}
+                  </View>
+                  <View className='sheet-point__addr'>
+                    {point.place.address}
+                  </View>
+                  <View className='sheet-point__time'>
+                    {formatDateTime(point.expectedAt)}
+                  </View>
                 </View>
-                <View className='sheet-point__addr'>
-                  {point.place.address}
+                <View
+                  className='sheet-point__actions'
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <View
+                    className='nav-entry'
+                    onClick={() => {
+                      Taro.navigateTo({
+                        url: `/pages/nav/index?pointId=${point.id}`,
+                      })
+                    }}
+                  >
+                    <Navigation size={16} color='#1a5f4a' />
+                  </View>
+                  <View
+                    className='collect-star'
+                    onClick={() => onToggleCollectedListStar(point)}
+                  >
+                    <Star
+                      size={18}
+                      color='#eab308'
+                      filled={collected}
+                    />
+                  </View>
                 </View>
-                <View className='sheet-point__time'>
-                  {formatDateTime(point.expectedAt)}
-                </View>
-                {!!point.noteText && (
-                  <View className='sheet-point__note'>{point.noteText}</View>
-                )}
               </View>
-              <View
-                className='sheet-point__actions'
-                onClick={(e) => e.stopPropagation()}
-              >
-                <View
-                  className='nav-entry'
-                  onClick={() => {
-                    Taro.navigateTo({
-                      url: `/pages/nav/index?pointId=${point.id}`,
-                    })
-                  }}
-                >
-                  <Navigation size={16} color='#1a5f4a' />
-                </View>
-                <View
-                  className='edit-entry'
-                  onClick={() => {
-                    Taro.navigateTo({
-                      url: `/pages/point-note/index?pointId=${point.id}`,
-                    })
-                  }}
-                >
-                  <SquarePen size={16} color='#1a5f4a' />
-                </View>
-                <View
-                  className='collect-star'
-                  onClick={() => onToggleCollectedListStar(point)}
-                >
-                  <Star
-                    size={18}
-                    color='#eab308'
-                    filled={collected}
-                  />
+              <View className='sheet-point__detail'>
+                <View className='sheet-point__detail-inner'>
+                  {placeInfoRows(point.place).map((row) => (
+                    <View key={row.label} className='sheet-point__info-row'>
+                      <View className='sheet-point__info-label'>{row.label}</View>
+                      <View className='sheet-point__info-value'>{row.value}</View>
+                    </View>
+                  ))}
+                  <View className='sheet-point__detail-divider' />
+                  {point.noteHtml?.trim() ? (
+                    <RichText
+                      className='sheet-point__detail-html'
+                      nodes={point.noteHtml}
+                    />
+                  ) : point.noteText?.trim() ? (
+                    <View className='sheet-point__detail-text'>{point.noteText}</View>
+                  ) : (
+                    <View className='sheet-point__detail-empty'>暂无备注</View>
+                  )}
                 </View>
               </View>
             </View>

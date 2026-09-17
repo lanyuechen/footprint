@@ -3,7 +3,12 @@ import { View } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import type { PlaceInfo, TargetPoint, TravelPlan } from '../../types'
-import { getUserLocation, lookupMapPlace, searchPlaces } from '../../services/amap'
+import {
+  distanceMeters,
+  getUserLocation,
+  lookupMapPlace,
+  searchPlaces,
+} from '../../services/amap'
 import type { UserLocation } from '../../services/amap'
 import {
   createPoint,
@@ -31,6 +36,7 @@ import {
   sheetHeightPx,
 } from './map-geometry'
 import { isSamePlace } from './place-info'
+import { markerIconPath } from './place-axis'
 import { PLAN_MAP_ID, mapUserGesturingRef } from './PlanMap'
 import { MapStage } from './MapStage'
 import { TimelineView } from './TimelineView'
@@ -40,6 +46,21 @@ import './index.scss'
 
 /** 小于该位移视为点按，不算拖拽 */
 const SHEET_TAP_SLOP_PX = 10
+
+/** 画布与 scripts/generate-markers.mjs 的 PAD 一致：左 200、上 200、右 200、下 220 */
+const MARKER_CANVAS = { width: 1424, height: 1444 }
+/** 针尖在原图 (512, 1018.56)，外发光留白后不再贴底边 */
+const MARKER_ANCHOR = { x: 0.5, y: (1018.56 + 200) / MARKER_CANVAS.height }
+
+function placeMarkerIcon(place: PlaceInfo, selected: boolean) {
+  const width = selected ? 58 : 50
+  return {
+    iconPath: markerIconPath(place),
+    width,
+    height: Math.round((width * MARKER_CANVAS.height) / MARKER_CANVAS.width),
+    anchor: MARKER_ANCHOR,
+  }
+}
 
 export default function PlanViewPage() {
   const [planId, setPlanId] = useState('')
@@ -60,6 +81,8 @@ export default function PlanViewPage() {
   const [selectedPlace, setSelectedPlace] = useState<PlaceInfo | null>(null)
   /** 搜索选中后钉在「搜索框与已收藏」之间，点其他点时不移除 */
   const [pinnedSearchPlace, setPinnedSearchPlace] = useState<PlaceInfo | null>(null)
+  /** 地图点选出来的地点，展示在搜索结果和已收藏之上 */
+  const [mapPickedPlace, setMapPickedPlace] = useState<PlaceInfo | null>(null)
 
   const [inputFocus, setInputFocus] = useState(false)
   /** 取消搜索时先收起高度，动画结束后再切回浏览态 */
@@ -101,6 +124,8 @@ export default function PlanViewPage() {
   /** 主动聚焦后短时间内的 blur 不撤销焦点 */
   const ignoreBlurUntilRef = useRef(0)
   const mapCenterDisplayRef = useRef(DEFAULT_CENTER)
+  /** 搜索用当前地图关注点，不放进 effect 依赖，避免平移打断防抖 */
+  const focusCoordRef = useRef(DEFAULT_CENTER)
   const mapCenterAnimRaf = useRef<number | null>(null)
   const sheetCoverRatioRef = useRef(0.12)
   const mapScaleRef = useRef(12)
@@ -219,7 +244,10 @@ export default function PlanViewPage() {
       if (seq !== searchSeq.current) return
       setSearching(true)
       try {
-        const list = await searchPlaces(q, userLocation)
+        const list = await searchPlaces(q, {
+          mapCenter: focusCoordRef.current,
+          from: userLocation,
+        })
         if (seq !== searchSeq.current) return
         lastQueryRef.current = q
         setResults(list)
@@ -295,6 +323,7 @@ export default function PlanViewPage() {
   const sheetCoverRatio = coverRatioFromSheetHeight(sheetHeightNow)
   sheetCoverRatioRef.current = sheetCoverRatio
   mapScaleRef.current = mapScale
+  focusCoordRef.current = focusCoord
   sheetDraggingRef.current = dragHeightPx != null
 
   const effectiveLatSpan =
@@ -591,6 +620,7 @@ export default function PlanViewPage() {
         isSamePlace(p.place, selectedPlace)
       return {
         id: index,
+        ...placeMarkerIcon(p.place, selected),
         latitude: p.place.latitude,
         longitude: p.place.longitude,
         title: p.place.name,
@@ -614,6 +644,7 @@ export default function PlanViewPage() {
         const selected = previewKind === 'search'
         list.push({
           id: MARKER_ID_SEARCH,
+          ...placeMarkerIcon(pinnedSearchPlace, selected),
           latitude: pinnedSearchPlace.latitude,
           longitude: pinnedSearchPlace.longitude,
           title: pinnedSearchPlace.name,
@@ -682,6 +713,7 @@ export default function PlanViewPage() {
       setMapUi('browsing')
       setSelectedPlace(null)
       setPinnedSearchPlace(null)
+      setMapPickedPlace(null)
       setKeyword('')
       setResults([])
       setHasSearched(false)
@@ -845,6 +877,14 @@ export default function PlanViewPage() {
 
   const mapPoiSeq = useRef(0)
 
+  const placeFromMap = (place: PlaceInfo): PlaceInfo => {
+    if (!userLocation) return place
+    return {
+      ...place,
+      distanceMeters: distanceMeters(userLocation, place),
+    }
+  }
+
   const onMapPoiTap = (e: {
     detail: { name?: string; latitude?: number; longitude?: number }
   }) => {
@@ -856,27 +896,32 @@ export default function PlanViewPage() {
       ignoreMapClickRef.current = false
     }, 400)
 
+    const fallback: PlaceInfo = {
+      name: label,
+      address: '',
+      latitude,
+      longitude,
+    }
     const seq = ++mapPoiSeq.current
+    onSelectPlace(fallback, 'map')
     void lookupMapPlace(label, { latitude, longitude })
       .then((place) => {
-        if (seq !== mapPoiSeq.current) return
-        onSelectPlace(
-          place || {
-            name: label,
-            address: '',
-            latitude,
-            longitude,
-          },
-        )
+        if (seq !== mapPoiSeq.current || !place) return
+        const next = placeFromMap(place)
+        setMapPickedPlace(next)
+        setPinnedSearchPlace(next)
+        setSelectedPlace(next)
+        if (
+          !nearlySameCoord(
+            { latitude: next.latitude, longitude: next.longitude },
+            { latitude, longitude },
+          )
+        ) {
+          setFocusCoord({ latitude: next.latitude, longitude: next.longitude })
+        }
       })
       .catch(() => {
-        if (seq !== mapPoiSeq.current) return
-        onSelectPlace({
-          name: label,
-          address: '',
-          latitude,
-          longitude,
-        })
+        // 详情补齐失败时保留点选时的名称和坐标
       })
   }
 
@@ -894,12 +939,15 @@ export default function PlanViewPage() {
     }
   }
 
-  const onSelectPlace = (item: PlaceInfo) => {
+  const onSelectPlace = (item: PlaceInfo, source: 'map' | 'list' = 'list') => {
     clearInputFocus()
     moveSheet('middle')
-    setPinnedSearchPlace(item)
-    setSelectedPlace(item)
+    const next = source === 'map' ? placeFromMap(item) : item
+    setPinnedSearchPlace(next)
+    setSelectedPlace(next)
     setPreviewKind('search')
+    setMapPickedPlace(source === 'map' ? next : null)
+    if (source === 'map') revealSelectedPlace(next)
     const nextScale = 15
     const seq = ++selectSpanSeq.current
     ownMapMoveRef.current = true
@@ -916,12 +964,15 @@ export default function PlanViewPage() {
 
   const focusPinnedSearchPlace = () => {
     if (!pinnedSearchPlace) return
-    setSelectedPlace(pinnedSearchPlace)
+    const next = placeFromMap(pinnedSearchPlace)
+    setMapPickedPlace(next)
+    setSelectedPlace(next)
     setPreviewKind('search')
     focusCoordOnMap({
-      latitude: pinnedSearchPlace.latitude,
-      longitude: pinnedSearchPlace.longitude,
+      latitude: next.latitude,
+      longitude: next.longitude,
     })
+    revealSelectedPlace(next)
   }
 
   const onKeywordInput = (value: string) => {
@@ -998,9 +1049,7 @@ export default function PlanViewPage() {
     markDeferredUncollect(point)
   }
 
-  const scrollToCollectedPoint = (pointId: string) => {
-    const targetId = `collected-${pointId}`
-    // 先清空再设置，保证重复点击同一项也能滚动
+  const scrollSheetTarget = (targetId: string) => {
     setScrollIntoView('')
     if (scrollTimer.current) clearTimeout(scrollTimer.current)
     scrollTimer.current = setTimeout(() => {
@@ -1012,18 +1061,46 @@ export default function PlanViewPage() {
     }, 80)
   }
 
-  const focusPointOnMap = (point: TargetPoint) => {
+  const scrollToCollectedPoint = (pointId: string) => {
+    scrollSheetTarget(`collected-${pointId}`)
+  }
+
+  const revealSelectedPlace = (place: PlaceInfo) => {
+    const resultIndex = results.findIndex((item) => isSamePlace(item, place))
+    if (resultIndex >= 0) {
+      scrollSheetTarget(`search-result-${resultIndex}`)
+      return
+    }
+    const collected = points.find((point) => isSamePlace(point.place, place))
+    if (collected) {
+      scrollToCollectedPoint(collected.id)
+      return
+    }
+    scrollSheetToTop()
+  }
+
+  const focusPointOnMap = (
+    point: TargetPoint,
+    source: 'map' | 'list' = 'list',
+  ) => {
     clearInputFocus()
     moveSheet('middle')
     setSelectedPlace(point.place)
     setPreviewKind('collected')
     // 不清理 pinnedSearchPlace：地图搜索点保留，搜索结果只取消高亮
+    if (source === 'map') {
+      setMapPickedPlace(placeFromMap(point.place))
+    } else {
+      setMapPickedPlace(null)
+    }
     focusCoordOnMap(
       {
         latitude: point.place.latitude,
         longitude: point.place.longitude,
       },
-      () => scrollToCollectedPoint(point.id),
+      source === 'map'
+        ? () => revealSelectedPlace(point.place)
+        : () => scrollToCollectedPoint(point.id),
     )
   }
 
@@ -1041,7 +1118,7 @@ export default function PlanViewPage() {
 
     const point = points[markerId - 1]
     if (point) {
-      focusPointOnMap(point)
+      focusPointOnMap(point, 'map')
     }
   }
 
@@ -1152,6 +1229,7 @@ export default function PlanViewPage() {
           inSearchUi={inSearchUi}
           deferredUncollectIds={deferredUncollectIds}
           selectedPlace={selectedPlace}
+          mapPickedPlace={mapPickedPlace}
           focusPointOnMap={focusPointOnMap}
           onToggleCollectedListStar={onToggleCollectedListStar}
         />

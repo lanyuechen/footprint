@@ -30,7 +30,7 @@ export type CardOrigin = {
 
 const HOUR_H = 64
 const TICK_MS = 16
-/** 相对屏幕上下边缘的拖动行程。越小，越早到达起止时间 */
+/** 滑完整条时间轴所需的行程，占屏幕高度的比例。刻度均匀，与起止位置无关 */
 const DRAG_REACH = 0.26
 
 function StickyMarks({
@@ -183,12 +183,9 @@ export const TimeScrubber = forwardRef<TimeScrubberHandle, TimeScrubberProps>(
     const targetIndex = (fingerY: number) => {
       const dy = fingerY - startFingerY
       const { height } = layoutRef.current
-      const spanUp = Math.max(1, startFingerY * DRAG_REACH)
-      const spanDown = Math.max(1, (height - startFingerY) * DRAG_REACH)
-      const next =
-        dy <= 0
-          ? startIndex - ((-dy) / spanUp) * startIndex
-          : startIndex + (dy / spanDown) * (slots.length - 1 - startIndex)
+      const travel = Math.max(1, height * DRAG_REACH)
+      const perPx = slots.length <= 1 ? 0 : (slots.length - 1) / travel
+      const next = startIndex + dy * perPx
       return Math.min(slots.length - 1, Math.max(0, next))
     }
 

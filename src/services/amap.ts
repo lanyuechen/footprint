@@ -39,7 +39,7 @@ function formatLocation(loc: UserLocation): string {
   return `${loc.longitude.toFixed(6)},${loc.latitude.toFixed(6)}`
 }
 
-function distanceMeters(
+export function distanceMeters(
   a: { latitude: number; longitude: number },
   b: { latitude: number; longitude: number },
 ): number {
@@ -280,54 +280,278 @@ async function requestPois(
     .filter((p): p is PlaceInfo => !!p)
 }
 
-/**
- * 关键字搜索：保留高德综合相关度排序（与 App 更接近）
- *
- * 说明：
- * - 高德 App 使用内部搜索，Web 服务 API 结果不会 100% 一致
- * - 此前用「周边搜索 + 本地按距离重排」会严重打乱相关度，现已改为文本搜索并保留返回顺序
- * - 有定位时传 location，仅作为召回权重参考，并计算直线距离用于展示
- */
-export async function searchPlaces(
-  keyword: string,
-  location?: UserLocation | null,
-): Promise<PlaceInfo[]> {
-  const q = keyword.trim()
-  if (!q) return []
+export interface PlaceSearchOptions {
+  /** 地图当前关注点。用来定城市，并让附近结果优先，对齐高德「当前城市」 */
+  mapCenter?: UserLocation | null
+  /** 用户定位。只用来算「距你」，不参与排序 */
+  from?: UserLocation | null
+}
 
-  const key = AMAP_CONFIG.webServiceKey
-  if (isPlaceholderKey(key)) {
-    return searchMockPlaces(q, location)
+interface SearchRegion {
+  citycode: string
+  /** 城市名；直辖市时 city 为空，这里会落到省名 */
+  city: string
+  adcode: string
+}
+
+const searchRegionCache = new Map<string, SearchRegion>()
+
+/** 输入提示 / 关键字搜索要用城市级区划，不能把区县 adcode 当城市 */
+function cityScope(region: SearchRegion | null): string {
+  if (!region) return ''
+  if (region.citycode) return region.citycode
+  if (region.adcode.length >= 4) return `${region.adcode.slice(0, 4)}00`
+  return region.city
+}
+
+function looksLikeAddress(keyword: string): boolean {
+  return /[0-9０-９]/.test(keyword) || /[路街巷弄号道村]/.test(keyword)
+}
+
+function tipToPlace(tip: Record<string, unknown>): PlaceInfo | null {
+  const loc = parseLocation(asText(tip.location))
+  const name = asText(tip.name).trim()
+  if (!loc || !name) return null
+  const district = asText(tip.district).trim()
+  const address = asText(tip.address).trim()
+  return {
+    poiId: asText(tip.id) || undefined,
+    name,
+    address: [district, address].filter(Boolean).join('') || address,
+    latitude: loc.latitude,
+    longitude: loc.longitude,
+    city: district || undefined,
+    typecode: asText(tip.typecode) || undefined,
   }
+}
 
-  // 优先使用 POI 2.0 文本搜索（综合权重排序）
+function isSameSearchHit(a: PlaceInfo, b: PlaceInfo): boolean {
+  if (a.poiId && b.poiId && a.poiId === b.poiId) return true
+  return (
+    distanceMeters(a, b) < 40 &&
+    (a.name === b.name || a.name.includes(b.name) || b.name.includes(a.name))
+  )
+}
+
+function withDistance(place: PlaceInfo, from?: UserLocation | null): PlaceInfo {
+  if (!from) return place
+  return {
+    ...place,
+    distanceMeters: distanceMeters(from, place),
+  }
+}
+
+async function resolveSearchRegion(
+  center: UserLocation,
+  key: string,
+): Promise<SearchRegion | null> {
+  const cacheKey = `${center.latitude.toFixed(2)},${center.longitude.toFixed(2)}`
+  const cached = searchRegionCache.get(cacheKey)
+  if (cached) return cached
+
+  const url =
+    `https://restapi.amap.com/v3/geocode/regeo?key=${encodeURIComponent(key)}` +
+    `&location=${formatLocation(center)}&extensions=base`
+  const data = await requestJson(url)
+  if (String(data.status ?? '') !== '1') return null
+  const comp = (
+    data.regeocode as { addressComponent?: Record<string, unknown> } | undefined
+  )?.addressComponent
+  const region: SearchRegion = {
+    citycode: asText(comp?.citycode),
+    city: asText(comp?.city) || asText(comp?.province),
+    adcode: asText(comp?.adcode),
+  }
+  if (!region.citycode && !region.city && !region.adcode) return null
+  searchRegionCache.set(cacheKey, region)
+  return region
+}
+
+/** 搜索框输入提示。这是高德 App 下拉列表实际用的接口，必须带城市才会吃 location */
+async function searchInputTips(
+  keyword: string,
+  key: string,
+  region: SearchRegion | null,
+  center?: UserLocation | null,
+): Promise<PlaceInfo[]> {
+  const city = cityScope(region)
+  let url =
+    `https://restapi.amap.com/v3/assistant/inputtips?key=${encodeURIComponent(key)}` +
+    `&keywords=${encodeURIComponent(keyword)}` +
+    `&datatype=poi|bus`
+  if (city) url += `&city=${encodeURIComponent(city)}`
+  if (center && city) url += `&location=${formatLocation(center)}`
+
+  const data = await requestJson(url)
+  if (String(data.status ?? '') !== '1') return []
+  const tips = Array.isArray(data.tips) ? data.tips : []
+  return tips
+    .map((tip) =>
+      tip && typeof tip === 'object'
+        ? tipToPlace(tip as Record<string, unknown>)
+        : null,
+    )
+    .filter((item): item is PlaceInfo => !!item)
+}
+
+/** 关键字搜索，只补输入提示没收录的结果，不本地重排 */
+async function searchKeywordPlaces(
+  keyword: string,
+  key: string,
+  region: SearchRegion | null,
+): Promise<PlaceInfo[]> {
+  const scope = cityScope(region)
   let textUrl =
     `https://restapi.amap.com/v5/place/text?key=${encodeURIComponent(key)}` +
-    `&keywords=${encodeURIComponent(q)}` +
+    `&keywords=${encodeURIComponent(keyword)}` +
     `&page_size=20&page_num=1&show_fields=business`
-
-  if (location) {
-    textUrl += `&location=${formatLocation(location)}`
-  }
+  if (scope) textUrl += `&region=${encodeURIComponent(scope)}`
 
   try {
-    const list = await requestPois(textUrl, location)
+    const list = await requestPois(textUrl)
     if (list.length > 0) return list
   } catch {
     // v5 失败时回退 v3
   }
 
-  // 回退：v3 关键字搜索，保持接口返回顺序（不要本地按距离重排）
   let v3Url =
     `https://restapi.amap.com/v3/place/text?key=${encodeURIComponent(key)}` +
-    `&keywords=${encodeURIComponent(q)}` +
-    `&offset=20&page=1&extensions=all&children=1`
+    `&keywords=${encodeURIComponent(keyword)}` +
+    `&offset=20&page=1&extensions=all`
+  if (scope) v3Url += `&city=${encodeURIComponent(scope)}`
+  return requestPois(v3Url)
+}
 
-  if (location) {
-    v3Url += `&location=${formatLocation(location)}`
+/** 门牌、道路类关键词补一条地理编码，避免只剩周边 POI */
+async function searchAddressPlace(
+  keyword: string,
+  key: string,
+  region: SearchRegion | null,
+): Promise<PlaceInfo | null> {
+  if (keyword.length < 3 || !looksLikeAddress(keyword)) return null
+  const scope = cityScope(region)
+  let url =
+    `https://restapi.amap.com/v3/geocode/geo?key=${encodeURIComponent(key)}` +
+    `&address=${encodeURIComponent(keyword)}`
+  if (scope) url += `&city=${encodeURIComponent(scope)}`
+
+  const data = await requestJson(url)
+  if (String(data.status ?? '') !== '1') return null
+  const geocodes = Array.isArray(data.geocodes) ? data.geocodes : []
+  const hit = geocodes.find((item) => item && typeof item === 'object') as
+    | Record<string, unknown>
+    | undefined
+  if (!hit) return null
+  const level = asText(hit.level)
+  if (
+    !['门牌号', '单元号', '道路', '道路交叉路口', '兴趣点', '公交地铁站点'].includes(
+      level,
+    )
+  ) {
+    return null
+  }
+  const loc = parseLocation(asText(hit.location))
+  if (!loc) return null
+  if (region?.adcode && asText(hit.adcode).slice(0, 4) !== region.adcode.slice(0, 4)) {
+    return null
+  }
+  const name = asText(hit.formatted_address).trim()
+  if (!name) return null
+  return {
+    name,
+    address: [asText(hit.province), asText(hit.city), asText(hit.district)]
+      .filter(Boolean)
+      .join(''),
+    latitude: loc.latitude,
+    longitude: loc.longitude,
+    city: asText(hit.city) || asText(hit.province) || undefined,
+  }
+}
+
+function mergeSearchHits(
+  tips: PlaceInfo[],
+  places: PlaceInfo[],
+  address: PlaceInfo | null,
+  from?: UserLocation | null,
+): PlaceInfo[] {
+  const richer = new Map<string, PlaceInfo>()
+  for (const place of places) {
+    if (place.poiId) richer.set(place.poiId, place)
   }
 
-  return requestPois(v3Url, location)
+  const out: PlaceInfo[] = []
+  const push = (place: PlaceInfo, preferIncomingName = false) => {
+    if (out.some((item) => isSameSearchHit(item, place))) return
+    const detail = place.poiId ? richer.get(place.poiId) : undefined
+    const merged = detail
+      ? {
+          ...detail,
+          name: preferIncomingName ? place.name : detail.name,
+          address: place.address || detail.address,
+          latitude: place.latitude,
+          longitude: place.longitude,
+        }
+      : place
+    out.push(withDistance(merged, from))
+  }
+
+  if (address && !tips.some((item) => isSameSearchHit(item, address))) {
+    push(address, true)
+  }
+  for (const tip of tips) push(tip, true)
+  for (const place of places) push(place)
+  return out.slice(0, 20)
+}
+
+/**
+ * 尽量对齐高德 App 搜索框：
+ * - 排序以输入提示为准（App 下拉就是这套）
+ * - 用地图所在城市做召回权重，不锁死本市，外地同名仍能出现
+ * - 关键字搜索只补提示里没有的地点，且不按距离重排
+ * - 手机定位只用来显示距离
+ */
+export async function searchPlaces(
+  keyword: string,
+  options?: PlaceSearchOptions | UserLocation | null,
+): Promise<PlaceInfo[]> {
+  const q = keyword.trim()
+  if (!q) return []
+
+  const opts: PlaceSearchOptions =
+    options && 'latitude' in options
+      ? { from: options, mapCenter: options }
+      : options || {}
+  const center = opts.mapCenter
+  const from = opts.from
+
+  const key = AMAP_CONFIG.webServiceKey
+  if (isPlaceholderKey(key)) {
+    return searchMockPlaces(q, from || center)
+  }
+
+  let region: SearchRegion | null = null
+  if (center) {
+    try {
+      region = await resolveSearchRegion(center, key)
+    } catch {
+      region = null
+    }
+  }
+
+  const [tipsResult, placesResult, addressResult] = await Promise.all([
+    searchInputTips(q, key, region, center).catch(() => [] as PlaceInfo[]),
+    searchKeywordPlaces(q, key, region).catch((err: unknown) => err),
+    searchAddressPlace(q, key, region).catch(() => null),
+  ])
+
+  const places = Array.isArray(placesResult) ? placesResult : []
+  const address = addressResult
+  if (tipsResult.length === 0 && places.length === 0 && !address) {
+    if (placesResult instanceof Error) throw placesResult
+    return []
+  }
+
+  return mergeSearchHits(tipsResult, places, address, from)
 }
 
 function pickNamedPlace(list: PlaceInfo[], name: string): PlaceInfo | null {

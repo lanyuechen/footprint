@@ -12,7 +12,8 @@
     "build:weapp": "taro build --type weapp",
     "dev:weapp": "npm run build:weapp -- --watch",
     "build:h5": "taro build --type h5",
-    "dev:h5": "npm run build:h5 -- --watch"
+    "dev:h5": "npm run build:h5 -- --watch",
+    "markers": "node scripts/generate-markers.mjs"
   },
   "browserslist": [
     "last 3 versions",
@@ -41,6 +42,7 @@
     "@babel/plugin-transform-runtime": "^7.29.7",
     "@babel/preset-react": "^7.24.0",
     "@pmmmwh/react-refresh-webpack-plugin": "^0.5.11",
+    "@resvg/resvg-js": "^2.6.2",
     "@tarojs/cli": "4.0.9",
     "@tarojs/webpack5-runner": "4.0.9",
     "@types/node": "^20.11.0",

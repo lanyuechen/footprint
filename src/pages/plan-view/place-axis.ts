@@ -25,9 +25,10 @@ import { Utensils } from 'lucide-react-taro/icons/utensils'
 import { Wrench } from 'lucide-react-taro/icons/wrench'
 
 type AxisIcon = typeof MapPin
-export type AxisMark = { icon: AxisIcon; color: string }
+/** 针脚文件名，对应 src/assets/markers。新增后运行 npm run markers 出图 */
+export type AxisMark = { icon: AxisIcon; color: string; marker: string }
 
-const AXIS_DEFAULT: AxisMark = { icon: MapPin, color: '#1a5f4a' }
+const AXIS_DEFAULT: AxisMark = { icon: MapPin, color: '#1a5f4a', marker: 'map-pin' }
 
 /** 把类型色混入白色，作为图标底衬 */
 export function lightenColor(hex: string, mix = 0.82) {
@@ -39,38 +40,38 @@ export function lightenColor(hex: string, mix = 0.82) {
 
 /** 高德大类编码前两位 → 时间轴图标和颜色 */
 const PLACE_MAJOR_MARKS: Record<string, AxisMark> = {
-  '01': { icon: Car, color: '#0ea5e9' },
-  '02': { icon: Car, color: '#0ea5e9' },
-  '03': { icon: Wrench, color: '#d97706' },
-  '04': { icon: Bike, color: '#06b6d4' },
-  '05': { icon: Utensils, color: '#f97316' },
-  '06': { icon: ShoppingBag, color: '#ec4899' },
-  '07': { icon: Store, color: '#14b8a6' },
-  '08': { icon: Dumbbell, color: '#22c55e' },
-  '09': { icon: Hospital, color: '#ef4444' },
-  '10': { icon: Hotel, color: '#8b5cf6' },
-  '11': { icon: Mountain, color: '#10b981' },
-  '12': { icon: Building2, color: '#64748b' },
-  '13': { icon: Landmark, color: '#3b82f6' },
-  '14': { icon: GraduationCap, color: '#6366f1' },
-  '16': { icon: Banknote, color: '#eab308' },
-  '17': { icon: Building, color: '#78716c' },
-  '22': { icon: Ticket, color: '#f43f5e' },
+  '01': { icon: Car, color: '#0ea5e9', marker: 'car' },
+  '02': { icon: Car, color: '#0ea5e9', marker: 'car' },
+  '03': { icon: Wrench, color: '#d97706', marker: 'wrench' },
+  '04': { icon: Bike, color: '#06b6d4', marker: 'bike' },
+  '05': { icon: Utensils, color: '#f97316', marker: 'utensils' },
+  '06': { icon: ShoppingBag, color: '#ec4899', marker: 'shopping-bag' },
+  '07': { icon: Store, color: '#14b8a6', marker: 'store' },
+  '08': { icon: Dumbbell, color: '#22c55e', marker: 'dumbbell' },
+  '09': { icon: Hospital, color: '#ef4444', marker: 'hospital' },
+  '10': { icon: Hotel, color: '#8b5cf6', marker: 'hotel' },
+  '11': { icon: Mountain, color: '#10b981', marker: 'mountain' },
+  '12': { icon: Building2, color: '#64748b', marker: 'building-2' },
+  '13': { icon: Landmark, color: '#3b82f6', marker: 'landmark' },
+  '14': { icon: GraduationCap, color: '#6366f1', marker: 'graduation-cap' },
+  '16': { icon: Banknote, color: '#eab308', marker: 'banknote' },
+  '17': { icon: Building, color: '#78716c', marker: 'building' },
+  '22': { icon: Ticket, color: '#f43f5e', marker: 'ticket' },
 }
 
 /** 交通设施按中类再分 */
 const PLACE_TRANSIT_MARKS: Record<string, AxisMark> = {
-  '1501': { icon: Plane, color: '#2563eb' },
-  '1502': { icon: TrainFront, color: '#1e3a8a' },
-  '1503': { icon: Ship, color: '#0e7490' },
-  '1504': { icon: Bus, color: '#c2410c' },
-  '1505': { icon: TramFront, color: '#7c3aed' },
-  '1506': { icon: TramFront, color: '#7c3aed' },
-  '1507': { icon: Bus, color: '#c2410c' },
-  '1509': { icon: CircleParking, color: '#57534e' },
+  '1501': { icon: Plane, color: '#2563eb', marker: 'plane' },
+  '1502': { icon: TrainFront, color: '#1e3a8a', marker: 'train-front' },
+  '1503': { icon: Ship, color: '#0e7490', marker: 'ship' },
+  '1504': { icon: Bus, color: '#c2410c', marker: 'bus' },
+  '1505': { icon: TramFront, color: '#7c3aed', marker: 'tram-front' },
+  '1506': { icon: TramFront, color: '#7c3aed', marker: 'tram-front' },
+  '1507': { icon: Bus, color: '#c2410c', marker: 'bus' },
+  '1509': { icon: CircleParking, color: '#57534e', marker: 'circle-parking' },
 }
 
-const PLACE_PARK_MARK: AxisMark = { icon: Trees, color: '#84cc16' }
+const PLACE_PARK_MARK: AxisMark = { icon: Trees, color: '#84cc16', marker: 'trees' }
 
 export function placeAxisMark(place: PlaceInfo): AxisMark {
   const code = (place.typecode || '').split('|')[0].replace(/\D/g, '')
@@ -96,4 +97,9 @@ export function placeAxisMark(place: PlaceInfo): AxisMark {
   if (/风景|景点|名胜/.test(type)) return PLACE_MAJOR_MARKS['11']
   if (/政府/.test(type)) return PLACE_MAJOR_MARKS['13']
   return AXIS_DEFAULT
+}
+
+/** 小程序包内路径。文件由 copy 拷到 dist/assets/markers */
+export function markerIconPath(place: PlaceInfo) {
+  return `/assets/markers/${placeAxisMark(place).marker}.png`
 }

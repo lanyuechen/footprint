@@ -1,10 +1,17 @@
-import { View, Text, ScrollView, RichText } from '@tarojs/components'
+import { View, Text, ScrollView, RichText, Picker } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { Navigation } from 'lucide-react-taro/icons/navigation'
 import { Star } from 'lucide-react-taro/icons/star'
 import { useEffect, useRef, useState } from 'react'
 import type { TargetPoint, TravelPlan } from '../../types'
-import { formatClock, formatPlanSummary, spanDays } from '../../utils/datetime'
+import {
+  combineDateTime,
+  formatClock,
+  formatPlanSummary,
+  spanDays,
+  toDatePart,
+  toTimePart,
+} from '../../utils/datetime'
 import { lightenColor, placeAxisMark } from './place-axis'
 import { placeInfoRows } from './place-info'
 import { TimeScrubber, type CardOrigin, type TimeScrubberHandle } from './TimeScrubber'
@@ -217,9 +224,31 @@ export function TimelineView({
                             >
                               <View className='timeline__head'>
                                 <View className='timeline__main'>
-                                  <View className='timeline__time'>
-                                    {formatClock(point.expectedAt)}
-                                  </View>
+                                  <Picker
+                                    mode='time'
+                                    value={toTimePart(point.expectedAt)}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      ignoreClickRef.current = true
+                                    }}
+                                    onChange={(e) => {
+                                      ignoreClickRef.current = true
+                                      const next = combineDateTime(
+                                        toDatePart(point.expectedAt),
+                                        e.detail.value,
+                                      )
+                                      if (next !== point.expectedAt) {
+                                        onReschedule(point.id, next)
+                                      }
+                                    }}
+                                  >
+                                    <View
+                                      className='timeline__time'
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      {formatClock(point.expectedAt)}
+                                    </View>
+                                  </Picker>
                                   <View className='timeline__name'>{point.place.name}</View>
                                   {!!point.place.address && (
                                     <View className='timeline__addr'>

@@ -19,7 +19,12 @@ export default defineConfig<'webpack5'>(async (merge) => {
     plugins: [],
     defineConstants: {},
     copy: {
-      patterns: [],
+      patterns: [
+        {
+          from: 'src/assets/markers',
+          to: 'dist/assets/markers',
+        },
+      ],
       options: {},
     },
     framework: 'react',
