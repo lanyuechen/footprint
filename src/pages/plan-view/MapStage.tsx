@@ -4,8 +4,8 @@ import Taro from '@tarojs/taro'
 import { Navigation } from 'lucide-react-taro/icons/navigation'
 import { MapPin } from 'lucide-react-taro/icons/map-pin'
 import { Star } from 'lucide-react-taro/icons/star'
-import type { PlaceInfo, TargetPoint } from '../../types'
-import { formatDateTime, formatDistance } from '../../utils/datetime'
+import type { PlaceInfo, CollectedPlace } from '../../types'
+import { formatDistance } from '../../utils/datetime'
 import { isSamePlace, placeInfoRows } from './place-info'
 import { PlanMap } from './PlanMap'
 import type { MapUiMode, PreviewKind, SheetPos } from './types'
@@ -47,13 +47,13 @@ export type MapStageProps = {
   hasSearched: boolean
   results: PlaceInfo[]
   onSelectPlace: (item: PlaceInfo, source?: 'map' | 'list') => void
-  points: TargetPoint[]
+  points: CollectedPlace[]
   inSearchUi: boolean
   deferredUncollectIds: Set<string>
   selectedPlace: PlaceInfo | null
   mapPickedPlace: PlaceInfo | null
-  focusPointOnMap: (point: TargetPoint) => void
-  onToggleCollectedListStar: (point: TargetPoint) => void
+  focusPointOnMap: (point: CollectedPlace) => void
+  onToggleCollectedListStar: (point: CollectedPlace) => void
 }
 
 function highlightParts(text: string, keyword: string) {
@@ -358,7 +358,7 @@ export function MapStage(props: MapStageProps) {
           <View className='sheet__empty'>
             {inSearchUi
               ? '暂无收藏，搜索地点后可加入'
-              : '暂无目标点，可收藏当前地点'}
+              : '暂无收藏地点，可在地图上选点收藏'}
           </View>
         ) : (
           points.map((point, index) => {
@@ -394,9 +394,6 @@ export function MapStage(props: MapStageProps) {
                   </View>
                   <View className='sheet-point__addr'>
                     {point.place.address}
-                  </View>
-                  <View className='sheet-point__time'>
-                    {formatDateTime(point.expectedAt)}
                   </View>
                 </View>
                 <View

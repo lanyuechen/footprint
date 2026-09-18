@@ -2,7 +2,6 @@ import { Fragment } from 'react'
 import { View, Text } from '@tarojs/components'
 import { ListTree } from 'lucide-react-taro/icons/list-tree'
 import { MapPinned } from 'lucide-react-taro/icons/map-pinned'
-import { Plus } from 'lucide-react-taro/icons/plus'
 import type { PlanView } from './types'
 
 const PLAN_VIEWS: Array<{ id: PlanView; label: string }> = [
@@ -16,7 +15,6 @@ type ViewSwitchProps = {
   onToggle: () => void
   onClose: () => void
   onSelect: (view: PlanView) => void
-  onAddPlace?: () => void
 }
 
 export function ViewSwitch({
@@ -25,7 +23,6 @@ export function ViewSwitch({
   onToggle,
   onClose,
   onSelect,
-  onAddPlace,
 }: ViewSwitchProps) {
   return (
     <Fragment>
@@ -36,17 +33,6 @@ export function ViewSwitch({
           <ListTree size={16} color='#1a5f4a' />
         )}
       </View>
-      {planView === 'timeline' && onAddPlace && (
-        <View
-          className='map-fab map-fab--right map-fab--below'
-          onClick={() => {
-            onClose()
-            onAddPlace()
-          }}
-        >
-          <Plus size={16} color='#1a5f4a' />
-        </View>
-      )}
       {open && (
         <View className='view-menu'>
           <View className='view-menu__mask' onClick={onClose} />

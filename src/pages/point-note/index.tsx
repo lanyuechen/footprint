@@ -1,9 +1,8 @@
 import { useLoad } from '@tarojs/taro'
-import { View, Text, Editor, Picker } from '@tarojs/components'
+import { View, Text, Editor } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { useRef, useState } from 'react'
-import { getPoint, updatePointNote } from '../../services/storage'
-import { combineDateTime, toDatePart, toTimePart } from '../../utils/datetime'
+import { getPlace, updatePlaceNote } from '../../services/storage'
 import './index.scss'
 
 const EDITOR_ID = 'point-note-editor'
@@ -17,33 +16,28 @@ type NoteEditorContext = {
 }
 
 export default function PointNotePage() {
-  const [pointId, setPointId] = useState('')
+  const [placeId, setPlaceId] = useState('')
   const [placeName, setPlaceName] = useState('')
-  const [datePart, setDatePart] = useState('')
-  const [timePart, setTimePart] = useState('')
   const [editorHeight, setEditorHeight] = useState(480)
   const [saving, setSaving] = useState(false)
   const noteHtmlRef = useRef('')
   const editorCtxRef = useRef<NoteEditorContext | null>(null)
 
   useLoad((options) => {
-    const id = options?.pointId || ''
-    const point = getPoint(id)
-    if (!point) {
+    const id = options?.pointId || options?.placeId || ''
+    const place = getPlace(id)
+    if (!place) {
       Taro.showToast({ title: '地点不存在', icon: 'none' })
       setTimeout(() => Taro.navigateBack(), 800)
       return
     }
-    setPointId(point.id)
-    setPlaceName(point.place.name)
-    setDatePart(toDatePart(point.expectedAt))
-    setTimePart(toTimePart(point.expectedAt))
-    noteHtmlRef.current = point.noteHtml || ''
-    Taro.setNavigationBarTitle({ title: point.place.name || '编辑地点' })
+    setPlaceId(place.id)
+    setPlaceName(place.place.name)
+    noteHtmlRef.current = place.noteHtml || ''
+    Taro.setNavigationBarTitle({ title: place.place.name || '编辑地点' })
 
     const info = Taro.getWindowInfo?.() || Taro.getSystemInfoSync()
-    // 地点名、时间选择、底部保存栏
-    setEditorHeight(Math.max((info.windowHeight || 667) - 340, 240))
+    setEditorHeight(Math.max((info.windowHeight || 667) - 260, 240))
   })
 
   const onEditorReady = () => {
@@ -64,7 +58,7 @@ export default function PointNotePage() {
   }
 
   const onSave = () => {
-    if (!pointId || saving) return
+    if (!placeId || saving) return
     const ctx = editorCtxRef.current
     if (!ctx) {
       Taro.showToast({ title: '编辑器未就绪', icon: 'none' })
@@ -75,10 +69,9 @@ export default function PointNotePage() {
       success: (res) => {
         const html = res.html || ''
         const text = (res.text || '').replace(/\u00a0/g, ' ').trim()
-        const updated = updatePointNote(pointId, {
+        const updated = updatePlaceNote(placeId, {
           noteHtml: text ? html : '',
           noteText: text,
-          expectedAt: combineDateTime(datePart, timePart),
         })
         setSaving(false)
         if (!updated) {
@@ -100,17 +93,6 @@ export default function PointNotePage() {
       <View className='point-note__head'>
         <Text className='point-note__label'>备注</Text>
         <Text className='point-note__name'>{placeName}</Text>
-      </View>
-      <View className='point-note__time'>
-        <Text className='point-note__label'>预期时间</Text>
-        <View className='point-note__time-row'>
-          <Picker mode='date' value={datePart} onChange={(e) => setDatePart(e.detail.value)}>
-            <View className='point-note__time-value'>{datePart || '选择日期'}</View>
-          </Picker>
-          <Picker mode='time' value={timePart} onChange={(e) => setTimePart(e.detail.value)}>
-            <View className='point-note__time-value'>{timePart || '选择时间'}</View>
-          </Picker>
-        </View>
       </View>
       <Editor
         id={EDITOR_ID}

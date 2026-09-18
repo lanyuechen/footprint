@@ -1,26 +1,26 @@
 import { useDidShow } from '@tarojs/taro'
-import { MovableArea, MovableView, View, Text } from '@tarojs/components'
+import { MovableArea, MovableView, ScrollView, View, Text } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { useEffect, useRef, useState } from 'react'
 import type { TravelPlan } from '../../types'
 import { SquarePen } from 'lucide-react-taro/icons/square-pen'
 import { Trash2 } from 'lucide-react-taro/icons/trash-2'
-import { deletePlan, listPlans, listPointsByPlan } from '../../services/storage'
-import { formatPlanSummary, spanDays } from '../../utils/datetime'
+import { deletePlan, getAppDataExportJson, listPlans } from '../../services/storage'
 import './index.scss'
 
 /** 编辑 + 删除按钮总宽，与样式一致（设计稿 px） */
 const ACTION_WIDTH = 280
 
 function PlanMeta({ plan }: { plan: TravelPlan }) {
-  const places = listPointsByPlan(plan.id)
   return (
     <>
       <View className='plan-item__name'>{plan.name}</View>
-      {!!plan.description && <View className='plan-item__desc'>{plan.description}</View>}
-      <View className='plan-item__meta'>
-        {formatPlanSummary(places.length, spanDays(places.map((point) => point.expectedAt)))}
-      </View>
+      {!!plan.startDate && (
+        <View className='plan-item__meta'>{plan.startDate}</View>
+      )}
+      {!!plan.description && (
+        <View className='plan-item__desc'>{plan.description}</View>
+      )}
     </>
   )
 }
@@ -177,6 +177,7 @@ function PlanSwipeRow({
 export default function IndexPage() {
   const [plans, setPlans] = useState<TravelPlan[]>([])
   const [openId, setOpenId] = useState<string | null>(null)
+  const [exportJson, setExportJson] = useState<string | null>(null)
 
   const refresh = () => {
     setPlans(listPlans())
@@ -211,10 +212,32 @@ export default function IndexPage() {
     refresh()
   }
 
+  const onExport = () => {
+    setExportJson(getAppDataExportJson())
+  }
+
+  const onCopyExport = async () => {
+    if (!exportJson) return
+    try {
+      await Taro.setClipboardData({ data: exportJson })
+    } catch {
+      Taro.showToast({ title: '复制失败', icon: 'none' })
+    }
+  }
+
   return (
     <View className='index' onClick={() => setOpenId(null)}>
       <View className='header'>
         <Text className='header__title'>我的计划</Text>
+        <Text
+          className='header__export'
+          onClick={(e) => {
+            e.stopPropagation()
+            onExport()
+          }}
+        >
+          导出
+        </Text>
       </View>
 
       {plans.length === 0 ? (
@@ -242,6 +265,39 @@ export default function IndexPage() {
       <View className='add-plan' onClick={goCreate}>
         <Text className='add-plan__text'>+ 添加计划</Text>
       </View>
+
+      {exportJson != null ? (
+        <View
+          className='export-mask'
+          catchMove
+          onClick={() => setExportJson(null)}
+        >
+          <View
+            className='export-dialog'
+            onClick={(e) => e.stopPropagation()}
+          >
+            <View className='export-dialog__head'>
+              <Text className='export-dialog__title'>导出数据</Text>
+              <Text
+                className='export-dialog__close'
+                onClick={() => setExportJson(null)}
+              >
+                关闭
+              </Text>
+            </View>
+            <ScrollView scrollY className='export-dialog__body'>
+              <Text className='export-dialog__json' selectable>
+                {exportJson}
+              </Text>
+            </ScrollView>
+            <View className='export-dialog__foot'>
+              <View className='export-dialog__btn' onClick={onCopyExport}>
+                <Text className='export-dialog__btn-text'>复制 JSON</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+      ) : null}
     </View>
   )
 }

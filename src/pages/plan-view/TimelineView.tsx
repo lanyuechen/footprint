@@ -1,341 +1,330 @@
-import { View, Text, ScrollView, RichText, Picker } from '@tarojs/components'
+import { View, Text, ScrollView, Picker, RichText } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { Navigation } from 'lucide-react-taro/icons/navigation'
-import { Star } from 'lucide-react-taro/icons/star'
-import { useEffect, useRef, useState } from 'react'
-import type { TargetPoint, TravelPlan } from '../../types'
+import { Trash2 } from 'lucide-react-taro/icons/trash-2'
+import { useMemo, useState } from 'react'
+import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
 import {
   combineDateTime,
   formatClock,
-  formatPlanSummary,
-  spanDays,
   toDatePart,
   toTimePart,
 } from '../../utils/datetime'
+import { GroupedSortList, type SortGroup } from './GroupedSortList'
 import { lightenColor, placeAxisMark } from './place-axis'
 import { placeInfoRows } from './place-info'
-import { TimeScrubber, type CardOrigin, type TimeScrubberHandle } from './TimeScrubber'
-import { buildHourSlots } from './time-scrub'
-import { groupPointsByYear } from './timeline-model'
+import { buildTimelineYears } from './timeline-model'
+
+type TimelineStopView = TripStop & {
+  place: CollectedPlace['place']
+  collected: CollectedPlace
+}
 
 type TimelineViewProps = {
   plan: TravelPlan
-  points: TargetPoint[]
-  expandedId: string
-  focusCardId: string
-  deferredUncollectIds: Set<string>
-  onToggleExpanded: (id: string) => void
-  onToggleCollected: (point: TargetPoint) => void
-  onReschedule: (pointId: string, expectedAt: string) => void
+  places: CollectedPlace[]
+  stops: TripStop[]
+  onRemoveStop: (stopId: string) => void
+  onReschedule: (stopId: string, expectedAt: string) => void
+  onReorderGroups: (groups: SortGroup<TimelineStopView>[]) => void
+  onAddStops: (datePart: string, placeIds: string[]) => void
+  onAddDay: () => void
+  onAddPlace: () => void
 }
 
 export function TimelineView({
   plan,
-  points,
-  expandedId,
-  focusCardId,
-  deferredUncollectIds,
-  onToggleExpanded,
-  onToggleCollected,
+  places,
+  stops,
+  onRemoveStop,
   onReschedule,
+  onReorderGroups,
+  onAddStops,
+  onAddDay,
+  onAddPlace,
 }: TimelineViewProps) {
-  const [scrub, setScrub] = useState<{
-    point: TargetPoint
-    origin: CardOrigin
-    startFingerY: number
-  } | null>(null)
-  const fingerYRef = useRef(0)
-  const scrubberRef = useRef<TimeScrubberHandle>(null)
-  const scrubbingRef = useRef(false)
-  const pendingReleaseRef = useRef(false)
-  const ignoreClickRef = useRef(false)
+  const [addDayKey, setAddDayKey] = useState('')
+  const [pickedIds, setPickedIds] = useState<string[]>([])
+  const [expandedId, setExpandedId] = useState('')
 
-  const rememberFinger = (y: number) => {
-    fingerYRef.current = y
+  const years = useMemo(
+    () => buildTimelineYears(plan, stops, places),
+    [plan, stops, places],
+  )
+
+  const groups: SortGroup<TimelineStopView>[] = useMemo(
+    () =>
+      years.flatMap((year) =>
+        year.days.map((day) => ({
+          id: day.datePart,
+          title: day.label,
+          subtitle: day.weekday,
+          items: day.stops,
+        })),
+      ),
+    [years],
+  )
+
+  const openAdd = (datePart: string) => {
+    setPickedIds([])
+    setAddDayKey(datePart)
   }
 
-  const startScrub = (point: TargetPoint, y: number) => {
-    if (deferredUncollectIds.has(point.id)) {
-      Taro.showToast({ title: '请先恢复收藏', icon: 'none' })
+  const togglePick = (placeId: string) => {
+    setPickedIds((prev) =>
+      prev.includes(placeId) ? prev.filter((id) => id !== placeId) : [...prev, placeId],
+    )
+  }
+
+  const confirmAdd = () => {
+    if (!addDayKey || pickedIds.length === 0) {
+      Taro.showToast({ title: '请选择地点', icon: 'none' })
       return
     }
-    if (buildHourSlots(points).length === 0) {
-      Taro.showToast({ title: '无法读取时间', icon: 'none' })
-      return
-    }
-    ignoreClickRef.current = true
-    scrubbingRef.current = true
-    rememberFinger(y)
-    try {
-      Taro.vibrateShort({ type: 'medium' })
-    } catch {
-      /* 旧基础库没有短震动 */
-    }
-    const page = Taro.getCurrentInstance().page
-    const query = page ? Taro.createSelectorQuery().in(page) : Taro.createSelectorQuery()
-    query
-      .select(`#tl-card-${point.id}`)
-      .boundingClientRect()
-      .exec((res) => {
-        const rect = res?.[0] as CardOrigin | undefined
-        if (!scrubbingRef.current) return
-        if (!rect?.width) {
-          scrubbingRef.current = false
-          Taro.showToast({ title: '无法读取卡片位置', icon: 'none' })
-          return
-        }
-        setScrub({
-          point,
-          origin: {
-            top: rect.top,
-            left: rect.left,
-            width: rect.width,
-            height: rect.height,
-          },
-          startFingerY: y || fingerYRef.current,
-        })
-      })
+    onAddStops(addDayKey, pickedIds)
+    setAddDayKey('')
+    setPickedIds([])
   }
-
-  const endScrub = () => {
-    if (!scrubbingRef.current) return
-    if (scrubberRef.current) scrubberRef.current.release()
-    else pendingReleaseRef.current = true
-  }
-
-  useEffect(() => {
-    if (!scrub || !pendingReleaseRef.current) return
-    pendingReleaseRef.current = false
-    scrubberRef.current?.release()
-  }, [scrub])
 
   return (
-    <View className={`timeline-view${scrub ? ' timeline-view--scrubbing' : ''}`}>
-      <View className='timeline-view__hero'>
-        <Text className='timeline-view__title'>{plan.name}</Text>
-        {!!plan.description ? (
-          <Text className='timeline-view__desc'>{plan.description}</Text>
-        ) : (
-          <Text className='timeline-view__desc timeline-view__desc--muted'>
-            暂无描述
-          </Text>
-        )}
-        <View className='timeline-view__meta'>
-          {formatPlanSummary(points.length, spanDays(points.map((point) => point.expectedAt)))}
-        </View>
-      </View>
-
-      <ScrollView
-        scrollY={!scrub}
-        enhanced
-        usingSticky
-        scrollWithAnimation
-        scrollIntoView={focusCardId ? `tl-item-${focusCardId}` : ''}
-        className='timeline-view__scroll'
-      >
-        {points.length === 0 ? (
-          <View className='timeline-view__empty'>还没有收藏地点</View>
-        ) : (
-          <View className='timeline'>
-            {groupPointsByYear(points).map((year, yearIndex, years) => (
-              <View key={year.key} className='timeline__year'>
-                <View className='timeline__sticky timeline__sticky--year'>
-                  <View className='timeline__item timeline__item--year'>
-                    <View className='timeline__rail'>
-                      <View
-                        className={`timeline__line${
-                          yearIndex === 0 ? ' timeline__line--start' : ''
-                        }`}
-                      />
-                      <View className='timeline__dot timeline__dot--year' />
-                    </View>
-                    <View className='timeline__year-label'>{year.label}</View>
-                  </View>
-                </View>
-                {year.days.map((day, dayIndex) => {
-                  return (
-                    <View key={day.key} className='timeline__day-group'>
-                      <View className='timeline__sticky timeline__sticky--day'>
-                        <View className='timeline__item timeline__item--day'>
-                          <View className='timeline__rail'>
-                            <View className='timeline__line' />
-                            <View className='timeline__dot timeline__dot--day' />
-                          </View>
-                          <View className='timeline__day'>
-                            {day.label}
-                            <Text className='timeline__weekday'>{day.weekday}</Text>
-                          </View>
-                        </View>
-                      </View>
-                      {day.points.map((point, index) => {
-                        const collected = !deferredUncollectIds.has(point.id)
-                        const axisMark = placeAxisMark(point.place)
-                        const AxisIcon = axisMark.icon
-                        const isLast =
-                          yearIndex === years.length - 1 &&
-                          dayIndex === year.days.length - 1 &&
-                          index === day.points.length - 1
-                        return (
-                          <View
-                            key={point.id}
-                            id={`tl-item-${point.id}`}
-                            className={`timeline__item${
-                              isLast ? ' timeline__item--last' : ''
-                            }`}
-                          >
-                            <View className='timeline__rail'>
-                              <View
-                                className={`timeline__line${
-                                  isLast ? ' timeline__line--end' : ''
-                                }`}
-                              />
-                              <View
-                                className='timeline__dot timeline__dot--point'
-                                style={{ backgroundColor: lightenColor(axisMark.color) }}
-                              >
-                                <AxisIcon size={14} color={axisMark.color} />
-                              </View>
-                            </View>
-                            <View
-                              id={`tl-card-${point.id}`}
-                              className={`timeline__card${
-                                expandedId === point.id ? ' timeline__card--open' : ''
-                              }${scrub?.point.id === point.id ? ' timeline__card--lifted' : ''}`}
-                              onTouchStart={(e) => {
-                                const t = e.touches[0]
-                                if (t) rememberFinger(t.clientY)
-                              }}
-                              onTouchMove={(e) => {
-                                const t = e.touches[0]
-                                if (t) rememberFinger(t.clientY)
-                              }}
-                              onTouchEnd={endScrub}
-                              onLongPress={(e) => {
-                                const t = e.touches?.[0]
-                                startScrub(point, t?.clientY ?? fingerYRef.current)
-                              }}
-                              onClick={() => {
-                                if (ignoreClickRef.current) {
-                                  ignoreClickRef.current = false
-                                  return
-                                }
-                                onToggleExpanded(expandedId === point.id ? '' : point.id)
-                              }}
-                            >
-                              <View className='timeline__head'>
-                                <View className='timeline__main'>
-                                  <Picker
-                                    mode='time'
-                                    value={toTimePart(point.expectedAt)}
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      ignoreClickRef.current = true
-                                    }}
-                                    onChange={(e) => {
-                                      ignoreClickRef.current = true
-                                      const next = combineDateTime(
-                                        toDatePart(point.expectedAt),
-                                        e.detail.value,
-                                      )
-                                      if (next !== point.expectedAt) {
-                                        onReschedule(point.id, next)
-                                      }
-                                    }}
-                                  >
-                                    <View
-                                      className='timeline__time'
-                                      onClick={(e) => e.stopPropagation()}
-                                    >
-                                      {formatClock(point.expectedAt)}
-                                    </View>
-                                  </Picker>
-                                  <View className='timeline__name'>{point.place.name}</View>
-                                  {!!point.place.address && (
-                                    <View className='timeline__addr'>
-                                      {point.place.address}
-                                    </View>
-                                  )}
-                                </View>
-                                <View
-                                  className='timeline__nav'
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    Taro.navigateTo({
-                                      url: `/pages/nav/index?pointId=${point.id}`,
-                                    })
-                                  }}
-                                >
-                                  <Navigation size={16} color='#1a5f4a' />
-                                </View>
-                                <View
-                                  className='collect-star'
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    onToggleCollected(point)
-                                  }}
-                                >
-                                  <Star
-                                    size={18}
-                                    color='#eab308'
-                                    filled={collected}
-                                  />
-                                </View>
-                              </View>
-                              <View className='timeline__detail'>
-                                <View className='timeline__detail-inner'>
-                                  {placeInfoRows(point.place).map((row) => (
-                                    <View key={row.label} className='timeline__info-row'>
-                                      <View className='timeline__info-label'>{row.label}</View>
-                                      <View className='timeline__info-value'>{row.value}</View>
-                                    </View>
-                                  ))}
-                                  <View className='timeline__detail-divider' />
-                                  {point.noteHtml?.trim() ? (
-                                    <RichText
-                                      className='timeline__detail-html'
-                                      nodes={point.noteHtml}
-                                    />
-                                  ) : point.noteText?.trim() ? (
-                                    <View className='timeline__detail-text'>
-                                      {point.noteText}
-                                    </View>
-                                  ) : (
-                                    <View className='timeline__detail-empty'>暂无备注</View>
-                                  )}
-                                </View>
-                              </View>
-                            </View>
-                          </View>
-                        )
-                      })}
-                    </View>
-                  )
-                })}
+    <View className='timeline-view'>
+      <GroupedSortList
+        groups={groups}
+        layoutKey={expandedId}
+        onItemClick={(id) => {
+          setExpandedId((cur) => (cur === id ? '' : id))
+        }}
+        onDragStart={() => setExpandedId('')}
+        onChange={(next) => {
+          setExpandedId('')
+          onReorderGroups(next)
+        }}
+        headerSlot={
+          <View className='timeline-view__hero'>
+            <Text className='timeline-view__title'>{plan.name}</Text>
+            {!!plan.startDate && (
+              <Text className='timeline-view__meta'>{plan.startDate}</Text>
+            )}
+            {!!plan.description ? (
+              <Text className='timeline-view__desc'>{plan.description}</Text>
+            ) : (
+              <Text className='timeline-view__desc timeline-view__desc--muted'>
+                暂无描述
+              </Text>
+            )}
+          </View>
+        }
+        footerSlot={
+          <View
+            className='gsl-row gsl-row--header'
+            onClick={(e) => {
+              e.stopPropagation()
+              onAddDay()
+            }}
+          >
+            <View className='gsl-rail'>
+              <View className='gsl-rail__dot gsl-rail__dot--day' />
+            </View>
+            <View className='grouped-sort__footer-add'>
+              <Text className='grouped-sort__footer-add-text'>添加日期</Text>
+            </View>
+          </View>
+        }
+        renderHeader={(group, { dragging }) => (
+          <View className='gsl-row gsl-row--header'>
+            <View className='gsl-rail'>
+              <View className='gsl-rail__dot gsl-rail__dot--day' />
+            </View>
+            <View className='grouped-sort__header-row'>
+              <View className='grouped-sort__header-main'>
+                <Text className='grouped-sort__header-title'>{group.title}</Text>
+                {!!group.subtitle && (
+                  <Text className='grouped-sort__header-sub'>{group.subtitle}</Text>
+                )}
               </View>
-            ))}
+              {!dragging && (
+                <View
+                  className='grouped-sort__header-add'
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    openAdd(group.id)
+                  }}
+                >
+                  + 添加
+                </View>
+              )}
+            </View>
           </View>
         )}
-      </ScrollView>
-      {scrub ? (
-        <TimeScrubber
-          ref={scrubberRef}
-          point={scrub.point}
-          points={points}
-          origin={scrub.origin}
-          startFingerY={scrub.startFingerY}
-          expanded={expandedId === scrub.point.id}
-          collected={!deferredUncollectIds.has(scrub.point.id)}
-          fingerYRef={fingerYRef}
-          onConfirm={(expectedAt) => {
-            scrubbingRef.current = false
-            onReschedule(scrub.point.id, expectedAt)
-            setScrub(null)
-          }}
-          onCancel={() => {
-            scrubbingRef.current = false
-            setScrub(null)
-          }}
-        />
+        renderItem={(point, { dragging }) => {
+          const axisMark = placeAxisMark(point.place)
+          const AxisIcon = axisMark.icon
+          const open = expandedId === point.id && !dragging
+          return (
+            <View className='gsl-row'>
+              <View className='gsl-rail'>
+                <View
+                  className='gsl-rail__dot gsl-rail__dot--point'
+                  style={{ backgroundColor: lightenColor(axisMark.color) }}
+                >
+                  <AxisIcon size={14} color={axisMark.color} />
+                </View>
+              </View>
+              <View
+                className={`gsl-card${dragging ? ' gsl-card--active' : ''}${
+                  open ? ' gsl-card--open' : ''
+                }`}
+              >
+                <View className='gsl-card__row'>
+                  <View className='gsl-card__main'>
+                    <View className='gsl-card__time-wrap'>
+                      <Picker
+                        mode='time'
+                        value={toTimePart(point.expectedAt)}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          const next = combineDateTime(
+                            toDatePart(point.expectedAt),
+                            e.detail.value,
+                          )
+                          if (next !== point.expectedAt) {
+                            onReschedule(point.id, next)
+                          }
+                        }}
+                      >
+                        <View
+                          className='gsl-card__time'
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {formatClock(point.expectedAt)}
+                        </View>
+                      </Picker>
+                    </View>
+                    <View className='gsl-card__name'>{point.place.name}</View>
+                    {!!point.place.address && (
+                      <View className='gsl-card__addr'>{point.place.address}</View>
+                    )}
+                  </View>
+                  <View
+                    className={`gsl-card__actions${
+                      dragging ? ' gsl-card__actions--hidden' : ''
+                    }`}
+                  >
+                    <View
+                      className='gsl-card__icon'
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        Taro.navigateTo({
+                          url: `/pages/nav/index?pointId=${point.placeId}`,
+                        })
+                      }}
+                    >
+                      <Navigation size={16} color='#1a5f4a' />
+                    </View>
+                  </View>
+                </View>
+                <View className='gsl-card__detail'>
+                  <View className='gsl-card__detail-inner'>
+                    <View className='gsl-card__detail-actions'>
+                      <View
+                        className='gsl-card__detail-delete'
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRemoveStop(point.id)
+                        }}
+                      >
+                        <Trash2 size={14} color='#c45656' />
+                        <Text className='gsl-card__detail-delete-text'>删除</Text>
+                      </View>
+                    </View>
+                    {placeInfoRows(point.place).map((row) => (
+                      <View key={row.label} className='gsl-card__info-row'>
+                        <View className='gsl-card__info-label'>{row.label}</View>
+                        <View className='gsl-card__info-value'>{row.value}</View>
+                      </View>
+                    ))}
+                    <View className='gsl-card__detail-divider' />
+                    {point.collected.noteHtml?.trim() ? (
+                      <RichText
+                        className='gsl-card__detail-html'
+                        nodes={point.collected.noteHtml}
+                      />
+                    ) : point.collected.noteText?.trim() ? (
+                      <View className='gsl-card__detail-text'>
+                        {point.collected.noteText}
+                      </View>
+                    ) : (
+                      <View className='gsl-card__detail-empty'>暂无备注</View>
+                    )}
+                  </View>
+                </View>
+              </View>
+            </View>
+          )
+        }}
+      />
+
+      {addDayKey ? (
+        <View className='place-picker'>
+          <View className='place-picker__mask' onClick={() => setAddDayKey('')} />
+          <View className='place-picker__sheet'>
+            <View className='place-picker__head'>
+              <Text className='place-picker__title'>添加到行程</Text>
+              <Text
+                className='place-picker__add-place'
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setAddDayKey('')
+                  onAddPlace()
+                }}
+              >
+                添加地点
+              </Text>
+            </View>
+            <View className='place-picker__sub'>可多选，同一地点可重复添加</View>
+            <ScrollView scrollY className='place-picker__list'>
+              {places.length === 0 ? (
+                <View className='place-picker__empty'>暂无收藏地点，请先添加</View>
+              ) : (
+                places.map((item) => {
+                  const selected = pickedIds.includes(item.id)
+                  return (
+                    <View
+                      key={item.id}
+                      className={`place-picker__item${
+                        selected ? ' place-picker__item--on' : ''
+                      }`}
+                      onClick={() => togglePick(item.id)}
+                    >
+                      <View
+                        className={`place-picker__check${
+                          selected ? ' place-picker__check--on' : ''
+                        }`}
+                      />
+                      <View className='place-picker__body'>
+                        <View className='place-picker__name'>{item.place.name}</View>
+                        {!!item.place.address && (
+                          <View className='place-picker__addr'>{item.place.address}</View>
+                        )}
+                      </View>
+                    </View>
+                  )
+                })
+              )}
+            </ScrollView>
+            <View className='place-picker__actions'>
+              <View className='place-picker__btn' onClick={() => setAddDayKey('')}>
+                取消
+              </View>
+              <View
+                className='place-picker__btn place-picker__btn--primary'
+                onClick={confirmAdd}
+              >
+                添加{pickedIds.length > 0 ? `（${pickedIds.length}）` : ''}
+              </View>
+            </View>
+          </View>
+        </View>
       ) : null}
     </View>
   )

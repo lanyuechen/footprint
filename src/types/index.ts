@@ -38,49 +38,67 @@ export interface PlaceInfo {
 }
 
 /**
- * 目标点
- * 后续可扩展：停留时长、完成状态、排序权重等
+ * 计划内收藏的地点（地图侧维护）
+ * 时间轴条目通过 placeId 引用，可重复引用
  */
-export interface TargetPoint {
+export interface CollectedPlace {
   id: string
   planId: string
   place: PlaceInfo
-  /** 预期前往时间，ISO 字符串，精确到分钟 */
-  expectedAt: string
   createdAt: string
   updatedAt: string
-  /** 备注（原生 editor HTML，后续可换扩展编辑器） */
   noteHtml?: string
-  /** 备注纯文本，便于列表预览 */
   noteText?: string
-  /** 预留扩展字段 */
   extra?: Record<string, unknown>
 }
 
 /**
+ * 时间轴上的行程点：对收藏地点的一次引用
+ * 同一收藏地点可出现多次（往返等）
+ */
+export interface TripStop {
+  id: string
+  planId: string
+  placeId: string
+  /** 该次行程预期时间，ISO，精确到分钟 */
+  expectedAt: string
+  createdAt: string
+  updatedAt: string
+  noteHtml?: string
+  noteText?: string
+  extra?: Record<string, unknown>
+}
+
+/** @deprecated 旧名，等同 CollectedPlace */
+export type TargetPoint = CollectedPlace
+
+/**
  * 旅行计划
- * 后续可扩展：userId、封面、状态、日期范围等
  */
 export interface TravelPlan {
   id: string
   name: string
   description: string
-  /** 目标点 id 列表（冗余，便于后续迁移；详情以 points 表为准） */
-  pointIds: string[]
+  /** 计划开始日，YYYY-MM-DD，时间轴日期以此为基准 */
+  startDate: string
+  /** 从 startDate 起连续展示的天数，至少 1 */
+  dayCount: number
+  /** 收藏地点 id */
+  placeIds: string[]
+  /** 行程引用 id */
+  stopIds: string[]
   createdAt: string
   updatedAt: string
-  /** 预留：登录后写入用户 id */
   userId?: string | null
-  /** 预留扩展字段 */
   extra?: Record<string, unknown>
 }
 
 export interface AppDataStore {
   version: number
-  /** 预留登录态 */
   currentUserId: string | null
   plans: TravelPlan[]
-  points: TargetPoint[]
+  places: CollectedPlace[]
+  stops: TripStop[]
 }
 
 export interface AmapPoi {
@@ -91,18 +109,15 @@ export interface AmapPoi {
   cityname?: string
   pname?: string
   adname?: string
-  /** 周边搜索等接口可能返回，单位米 */
   distance?: string | number
   type?: string
   typecode?: string
-  /** v3 常在根上；v5 在 business 内 */
   tel?: string
   business_area?: string
   business?: Record<string, unknown>
   biz_ext?: Record<string, unknown>
 }
 
-/** 导航出行方式（可继续扩展） */
 export type NavMode = 'walking' | 'riding' | 'transit'
 
 export type NavStepKind = 'walk' | 'ride' | 'bus' | 'metro' | 'railway' | 'other'
@@ -112,18 +127,13 @@ export interface NavRoutePoint {
   longitude: number
 }
 
-/** 路线分步（步行转弯 / 公交换乘段等） */
 export interface NavRouteStep {
   kind: NavStepKind
-  /** 主文案，如「向东步行100米」「乘坐地铁2号线」 */
   title: string
-  /** 补充说明，如上下车站 */
   detail?: string
   distanceMeters?: number
   durationSeconds?: number
-  /** 该分段对应的路径坐标，用于地图着色与聚焦 */
   points?: NavRoutePoint[]
-  /** 地图折线颜色 */
   color?: string
 }
 
@@ -132,8 +142,6 @@ export interface NavRoute {
   distanceMeters: number
   durationSeconds: number
   points: NavRoutePoint[]
-  /** 简要说明，如公交线路名串联 */
   summary?: string
-  /** 分步指引 */
   steps: NavRouteStep[]
 }

@@ -20,4 +20,4 @@ export const STORAGE_KEYS = {
   LAST_PLAN_VIEW: 'footprint_last_plan_view_v1',
 } as const
 
-export const DATA_VERSION = 1
+export const DATA_VERSION = 3

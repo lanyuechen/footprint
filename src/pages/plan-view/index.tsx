@@ -2,7 +2,7 @@ import { useDidShow, useLoad } from '@tarojs/taro'
 import { View } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import type { PlaceInfo, TargetPoint, TravelPlan } from '../../types'
+import type { PlaceInfo, CollectedPlace, TravelPlan, TripStop } from '../../types'
 import {
   distanceMeters,
   getUserLocation,
@@ -11,13 +11,18 @@ import {
 } from '../../services/amap'
 import type { UserLocation } from '../../services/amap'
 import {
-  createPoint,
-  deletePoint,
+  addStopsToDay,
+  createPlace,
+  deletePlace,
+  deleteStop,
   getPlan,
   getLastPlanView,
-  listPointsByPlan,
+  listPlacesByPlan,
+  listStopsByPlan,
+  reorderPlanStops,
   setLastPlanView,
-  updatePointExpectedAt,
+  setPlanDayCount,
+  updateStopExpectedAt,
 } from '../../services/storage'
 import {
   DEFAULT_CENTER,
@@ -65,7 +70,8 @@ function placeMarkerIcon(place: PlaceInfo, selected: boolean) {
 export default function PlanViewPage() {
   const [planId, setPlanId] = useState('')
   const [plan, setPlan] = useState<TravelPlan | null>(null)
-  const [points, setPoints] = useState<TargetPoint[]>([])
+  const [places, setPlaces] = useState<CollectedPlace[]>([])
+  const [stops, setStops] = useState<TripStop[]>([])
   const [mapUi, setMapUi] = useState<MapUiMode>('browsing')
   const [previewKind, setPreviewKind] = useState<PreviewKind>('search')
 
@@ -93,8 +99,6 @@ export default function PlanViewPage() {
   const [viewMenuOpen, setViewMenuOpen] = useState(false)
   /** 地图 / 时间轴，进入时恢复上次选择，没有则用时间轴 */
   const [planView, setPlanView] = useState<PlanView>(getLastPlanView)
-  const [expandedId, setExpandedId] = useState('')
-  const [focusCardId, setFocusCardId] = useState('')
   /** 已从存储删除、但仍在列表中展示的点，等底栏收起后再同步列表 */
   const [deferredUncollectIds, setDeferredUncollectIds] = useState<Set<string>>(
     () => new Set(),
@@ -143,13 +147,14 @@ export default function PlanViewPage() {
     const p = getPlan(id)
     if (!p) {
       setPlan(null)
-      setPoints([])
+      setPlaces([])
+      setStops([])
       setDeferredUncollectIds(new Set())
       return
     }
     setPlan(p)
-    setPoints(listPointsByPlan(id))
-    setDeferredUncollectIds(new Set())
+    setPlaces(listPlacesByPlan(id))
+    setStops(listStopsByPlan(id))
     Taro.setNavigationBarTitle({ title: p.name || '计划' })
   }
 
@@ -206,9 +211,9 @@ export default function PlanViewPage() {
     }
 
     const browseCover = coverRatioFromSheetHeight(sheetHeightPx('bottom'))
-    if (points.length > 0) {
+    if (places.length > 0) {
       const fitted = fitMapToPoints(
-        points.map((p) => ({
+        places.map((p) => ({
           latitude: p.place.latitude,
           longitude: p.place.longitude,
         })),
@@ -221,7 +226,7 @@ export default function PlanViewPage() {
       setMapScale(13)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [points, userLocation])
+  }, [places, userLocation])
 
   useEffect(() => {
     if (mapUi !== 'searching' || leavingSearch) return
@@ -277,24 +282,16 @@ export default function PlanViewPage() {
     return () => clearTimeout(timer)
   }, [keyword, userLocation, mapUi, leavingSearch])
 
-  const defaultExpectedAt = () => {
-    let latest: TargetPoint | null = null
-    for (const point of points) {
-      if (!latest || point.createdAt > latest.createdAt) latest = point
-    }
-    return latest?.expectedAt || new Date().toISOString()
-  }
-
   const collectPlace = (place: PlaceInfo) => {
     if (!planId) return
-    const existing = points.find(
+    const existing = places.find(
       (p) => isSamePlace(p.place, place) && !deferredUncollectIds.has(p.id),
     )
     if (existing) {
       markDeferredUncollect(existing)
       return
     }
-    const deferredSame = points.find(
+    const deferredSame = places.find(
       (p) => isSamePlace(p.place, place) && deferredUncollectIds.has(p.id),
     )
     if (deferredSame) {
@@ -302,12 +299,9 @@ export default function PlanViewPage() {
       return
     }
     try {
-      const created = createPoint({
-        planId,
-        place,
-        expectedAt: defaultExpectedAt(),
-      })
-      setPoints((prev) => [...prev, created])
+      const created = createPlace({ planId, place })
+      setPlaces((prev) => [created, ...prev])
+      setStops(listStopsByPlan(planId))
       refreshPlanMeta(planId)
       Taro.showToast({ title: '已收藏', icon: 'success' })
     } catch (err) {
@@ -611,7 +605,7 @@ export default function PlanViewPage() {
   }
 
   const markers = useMemo(() => {
-    const list = points.map((p, i) => {
+    const list = places.map((p, i) => {
       const index = i + 1
       const selected =
         !!selectedPlace &&
@@ -637,7 +631,7 @@ export default function PlanViewPage() {
 
     // 搜索钉住的点（尚未在列表中时单独打点；含待移除的取消收藏项）
     if (pinnedSearchPlace && mapUi === 'preview') {
-      const alreadyIn = points.some((p) =>
+      const alreadyIn = places.some((p) =>
         isSamePlace(p.place, pinnedSearchPlace),
       )
       if (!alreadyIn) {
@@ -661,7 +655,7 @@ export default function PlanViewPage() {
     }
 
     return list
-  }, [points, selectedPlace, pinnedSearchPlace, mapUi, previewKind])
+  }, [places, selectedPlace, pinnedSearchPlace, mapUi, previewKind])
 
   const ignoreMapClickRef = useRef(false)
 
@@ -982,27 +976,32 @@ export default function PlanViewPage() {
     }
   }
 
-  const markDeferredUncollect = (point: TargetPoint) => {
-    deletePoint(point.id)
+  const markDeferredUncollect = (point: CollectedPlace) => {
+    deletePlace(point.id)
     setDeferredUncollectIds((prev) => new Set(prev).add(point.id))
-    if (planId) refreshPlanMeta(planId)
+    if (planId) {
+      setStops(listStopsByPlan(planId))
+      refreshPlanMeta(planId)
+    }
     Taro.showToast({ title: '已取消收藏', icon: 'success' })
   }
 
-  const recollectDeferredPoint = (point: TargetPoint) => {
+  const recollectDeferredPoint = (point: CollectedPlace) => {
     if (!planId) return
     try {
-      const created = createPoint({
+      const created = createPlace({
         planId,
         place: point.place,
-        expectedAt: point.expectedAt,
       })
       setDeferredUncollectIds((prev) => {
         const next = new Set(prev)
         next.delete(point.id)
         return next
       })
-      setPoints((prev) => prev.map((p) => (p.id === point.id ? created : p)))
+      setPlaces((prev) => {
+        const without = prev.filter((p) => p.id !== point.id)
+        return [created, ...without]
+      })
       refreshPlanMeta(planId)
       Taro.showToast({ title: '已收藏', icon: 'success' })
     } catch (err) {
@@ -1040,7 +1039,7 @@ export default function PlanViewPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [results])
 
-  const onToggleCollectedListStar = (point: TargetPoint) => {
+  const onToggleCollectedListStar = (point: CollectedPlace) => {
     if (!planId) return
     if (deferredUncollectIds.has(point.id)) {
       recollectDeferredPoint(point)
@@ -1071,7 +1070,7 @@ export default function PlanViewPage() {
       scrollSheetTarget(`search-result-${resultIndex}`)
       return
     }
-    const collected = points.find((point) => isSamePlace(point.place, place))
+    const collected = places.find((point) => isSamePlace(point.place, place))
     if (collected) {
       scrollToCollectedPoint(collected.id)
       return
@@ -1080,7 +1079,7 @@ export default function PlanViewPage() {
   }
 
   const focusPointOnMap = (
-    point: TargetPoint,
+    point: CollectedPlace,
     source: 'map' | 'list' = 'list',
   ) => {
     clearInputFocus()
@@ -1116,7 +1115,7 @@ export default function PlanViewPage() {
       return
     }
 
-    const point = points[markerId - 1]
+    const point = places[markerId - 1]
     if (point) {
       focusPointOnMap(point, 'map')
     }
@@ -1225,7 +1224,7 @@ export default function PlanViewPage() {
           hasSearched={hasSearched}
           results={results}
           onSelectPlace={onSelectPlace}
-          points={points}
+          points={places}
           inSearchUi={inSearchUi}
           deferredUncollectIds={deferredUncollectIds}
           selectedPlace={selectedPlace}
@@ -1236,23 +1235,64 @@ export default function PlanViewPage() {
       ) : (
         <TimelineView
           plan={plan}
-          points={points}
-          expandedId={expandedId}
-          focusCardId={focusCardId}
-          deferredUncollectIds={deferredUncollectIds}
-          onToggleExpanded={(id) => setExpandedId(id)}
-          onToggleCollected={onToggleCollectedListStar}
-          onReschedule={(pointId, expectedAt) => {
-            const updated = updatePointExpectedAt(pointId, expectedAt)
+          places={places}
+          stops={stops}
+          onRemoveStop={(stopId) => {
+            deleteStop(stopId)
+            if (!planId) return
+            setStops(listStopsByPlan(planId))
+            refreshPlanMeta(planId)
+            Taro.showToast({ title: '已移除', icon: 'success' })
+          }}
+          onReschedule={(stopId, expectedAt) => {
+            const updated = updateStopExpectedAt(stopId, expectedAt)
             if (!updated || !planId) {
               Taro.showToast({ title: '时间未保存', icon: 'none' })
               return
             }
-            setPoints(listPointsByPlan(planId))
+            setStops(listStopsByPlan(planId))
             refreshPlanMeta(planId)
-            setFocusCardId('')
-            setTimeout(() => setFocusCardId(pointId), 80)
           }}
+          onReorderGroups={(groups) => {
+            if (!planId) return
+            try {
+              setStops(
+                reorderPlanStops(
+                  planId,
+                  groups.map((g) => ({
+                    datePart: g.id,
+                    stopIds: g.items.map((it) => it.id),
+                  })),
+                ),
+              )
+              refreshPlanMeta(planId)
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : '排序失败'
+              Taro.showToast({ title: msg, icon: 'none' })
+            }
+          }}
+          onAddStops={(datePart, placeIds) => {
+            if (!planId) return
+            try {
+              const created = addStopsToDay({ planId, datePart, placeIds })
+              setStops(listStopsByPlan(planId))
+              const p = getPlan(planId)
+              if (p) setPlan(p)
+              Taro.showToast({
+                title: created.length > 0 ? `已添加 ${created.length} 个` : '未添加',
+                icon: created.length > 0 ? 'success' : 'none',
+              })
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : '添加失败'
+              Taro.showToast({ title: msg, icon: 'none' })
+            }
+          }}
+          onAddDay={() => {
+            if (!planId || !plan) return
+            const next = setPlanDayCount(planId, (plan.dayCount || 1) + 1)
+            if (next) setPlan(next)
+          }}
+          onAddPlace={openMapToAdd}
         />
       )}
       <ViewSwitch
@@ -1261,7 +1301,6 @@ export default function PlanViewPage() {
         onToggle={() => setViewMenuOpen((open) => !open)}
         onClose={() => setViewMenuOpen(false)}
         onSelect={selectPlanView}
-        onAddPlace={openMapToAdd}
       />
     </View>
   )

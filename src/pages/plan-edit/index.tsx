@@ -1,14 +1,16 @@
 import { useLoad } from '@tarojs/taro'
-import { View, Text, Input, Textarea } from '@tarojs/components'
+import { View, Text, Input, Textarea, Picker } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { useState } from 'react'
 import { createPlan, getPlan, updatePlan } from '../../services/storage'
+import { toDatePart } from '../../utils/datetime'
 import './index.scss'
 
 export default function PlanEditPage() {
   const [planId, setPlanId] = useState('')
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [startDate, setStartDate] = useState(toDatePart(new Date().toISOString()))
   const isEdit = !!planId
 
   useLoad((options) => {
@@ -23,6 +25,7 @@ export default function PlanEditPage() {
       setPlanId(plan.id)
       setName(plan.name)
       setDescription(plan.description)
+      setStartDate(plan.startDate || toDatePart(plan.createdAt))
       Taro.setNavigationBarTitle({ title: '编辑计划' })
     } else {
       Taro.setNavigationBarTitle({ title: '新建计划' })
@@ -34,12 +37,16 @@ export default function PlanEditPage() {
       Taro.showToast({ title: '请输入计划名称', icon: 'none' })
       return
     }
+    if (!startDate) {
+      Taro.showToast({ title: '请选择开始日期', icon: 'none' })
+      return
+    }
     if (isEdit) {
-      updatePlan(planId, { name, description })
+      updatePlan(planId, { name, description, startDate })
       Taro.showToast({ title: '已保存', icon: 'success' })
       setTimeout(() => Taro.navigateBack(), 500)
     } else {
-      createPlan({ name, description })
+      createPlan({ name, description, startDate })
       Taro.showToast({ title: '已创建', icon: 'success' })
       setTimeout(() => Taro.navigateBack(), 500)
     }
@@ -58,6 +65,19 @@ export default function PlanEditPage() {
             onInput={(e) => setName(e.detail.value)}
           />
         </View>
+      </View>
+      <View className='field'>
+        <Text className='field__label'>开始日期</Text>
+        <Picker
+          mode='date'
+          value={startDate}
+          onChange={(e) => setStartDate(e.detail.value)}
+        >
+          <View className='field__input-wrap field__picker'>
+            <Text className='field__picker-text'>{startDate}</Text>
+          </View>
+        </Picker>
+        <Text className='field__hint'>时间轴将以此日为起点</Text>
       </View>
       <View className='field'>
         <Text className='field__label'>描述</Text>
