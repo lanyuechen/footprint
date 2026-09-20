@@ -104,6 +104,18 @@
   background: #fff;
   padding: 28px;
 
+  &__top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  &__main {
+    flex: 1;
+    min-width: 0;
+  }
+
   &__name {
     font-size: 32px;
     font-weight: 600;
@@ -128,6 +140,19 @@
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     word-break: break-all;
+  }
+
+  &__add-place {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 4px 8px 12px;
+  }
+
+  &__add-place-text {
+    font-size: 24px;
+    color: #1a5f4a;
   }
 }
 

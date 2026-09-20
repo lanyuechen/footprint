@@ -1,6 +1,14 @@
 import { View, ScrollView, Text } from '@tarojs/components'
 import Taro from '@tarojs/taro'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import './GroupedSortList.scss'
 
 /**
@@ -209,6 +217,133 @@ function isSameStructure<T extends { id: string }>(
   return true
 }
 
+type HeaderRowProps = {
+  y: number
+  height: number
+  transition: string
+  enterAnim: boolean
+  riseDelay: number
+  children: ReactNode
+}
+
+const HeaderRow = memo(function HeaderRow({
+  y,
+  height,
+  transition,
+  enterAnim,
+  riseDelay,
+  children,
+}: HeaderRowProps) {
+  return (
+    <View
+      className='grouped-sort__header'
+      style={{
+        transform: `translate3d(0, ${y}px, 0)`,
+        height: `${height}px`,
+        transition,
+      }}
+    >
+      <View
+        className={enterAnim ? 'grouped-sort__rise' : undefined}
+        style={{
+          height: '100%',
+          ...(enterAnim ? { animationDelay: `${riseDelay}ms` } : null),
+        }}
+      >
+        {children}
+      </View>
+    </View>
+  )
+})
+
+type ItemRowProps = {
+  id: string
+  baseY: number
+  height: number
+  isActive: boolean
+  transition: string
+  enterAnim: boolean
+  riseDelay: number
+  children: ReactNode
+  onTouchStart: (id: string, baseY: number, e: unknown) => void
+  onLongPress: (id: string, baseY: number) => void
+  onTouchMove: (e: unknown) => void
+  onTouchEnd: () => void
+  onTap: (id: string) => void
+}
+
+const ItemRow = memo(function ItemRow({
+  id,
+  baseY,
+  height,
+  isActive,
+  transition,
+  enterAnim,
+  riseDelay,
+  children,
+  onTouchStart,
+  onLongPress,
+  onTouchMove,
+  onTouchEnd,
+  onTap,
+}: ItemRowProps) {
+  return (
+    <View
+      id={`gsl-item-${id}`}
+      className={`grouped-sort__item${
+        isActive ? ' grouped-sort__item--hole' : ' grouped-sort__item--rest'
+      }`}
+      style={{
+        transform: `translate3d(0, ${baseY}px, 0)`,
+        minHeight: `${height}px`,
+        transition: isActive ? 'none' : transition,
+        opacity: isActive ? 0 : 1,
+      }}
+      onTouchStart={(e) => onTouchStart(id, baseY, e)}
+      onLongPress={() => onLongPress(id, baseY)}
+      onTouchMove={(e) => onTouchMove(e)}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+      onClick={() => onTap(id)}
+    >
+      <View
+        className={`grouped-sort__item-inner${
+          enterAnim && !isActive ? ' grouped-sort__rise' : ''
+        }`}
+        style={
+          enterAnim && !isActive
+            ? { animationDelay: `${riseDelay}ms` }
+            : undefined
+        }
+      >
+        <View id={`gsl-measure-${id}`} className='gsl-measure' data-id={id}>
+          {children}
+        </View>
+      </View>
+    </View>
+  )
+})
+
+type FloatRowProps = {
+  y: number
+  height: number
+  children: ReactNode
+}
+
+const FloatRow = memo(function FloatRow({ y, height, children }: FloatRowProps) {
+  return (
+    <View
+      className='grouped-sort__item grouped-sort__item--float'
+      style={{
+        transform: `translate3d(0, ${y}px, 0)`,
+        height: `${height}px`,
+      }}
+    >
+      <View className='grouped-sort__item-inner'>{children}</View>
+    </View>
+  )
+})
+
 export function GroupedSortList<T extends { id: string }>(
   props: GroupedSortListProps<T>,
 ) {
@@ -220,9 +355,12 @@ export function GroupedSortList<T extends { id: string }>(
 
   // —— 渲染态 ——
   const [activeId, setActiveId] = useState<string | null>(null)
-  const [activeY, setActiveY] = useState<number | null>(null)
+  /** 浮层跟手 Y：每帧更新；与让位预览解耦 */
+  const [floatY, setFloatY] = useState<number | null>(null)
   const [originY, setOriginY] = useState<number | null>(null)
   const [hasMoved, setHasMoved] = useState(false)
+  /** 仅在插入位置变化时递增，避免跟手时整表重算 */
+  const [previewTick, setPreviewTick] = useState(0)
   /** 非 null 时锁定原生 scrollTop，改用 contentShift 虚拟滚 */
   const [dragLockScroll, setDragLockScroll] = useState<number | null>(null)
   const [contentShift, setContentShift] = useState(0)
@@ -245,6 +383,9 @@ export function GroupedSortList<T extends { id: string }>(
   const areaHRef = useRef(0)
   const viewportHRef = useRef(600)
   const heightsRef = useRef(heights)
+  const groupsRef = useRef(props.groups)
+  const fallbackHRef = useRef(fallbackH)
+  const headerHRef = useRef(headerH)
   const previewRef = useRef<SortGroup<T>[] | null>(null)
   /** 松手后钉住已提交顺序，直到 props.groups 跟上，避免闪回旧序 */
   const committedRef = useRef<SortGroup<T>[] | null>(null)
@@ -268,6 +409,9 @@ export function GroupedSortList<T extends { id: string }>(
   onChangeRef.current = props.onChange
   onDragStartRef.current = props.onDragStart
   heightsRef.current = heights
+  groupsRef.current = props.groups
+  fallbackHRef.current = fallbackH
+  headerHRef.current = headerH
   viewportHRef.current = viewportH
 
   const dragging = !!activeId
@@ -285,6 +429,25 @@ export function GroupedSortList<T extends { id: string }>(
     setScrollApplyNonce((n) => n + 1)
   }
 
+  /** 跟手过程中计算插入预览；仅结构变化时 bump previewTick */
+  const syncPreviewOrder = (y: number) => {
+    const id = activeIdRef.current
+    if (!id || !hasMovedRef.current) return
+    const next = reorderGroups(
+      previewRef.current || groupsRef.current,
+      id,
+      y,
+      heightOf(id, heightsRef.current, fallbackHRef.current),
+      heightsRef.current,
+      fallbackHRef.current,
+      headerHRef.current,
+    )
+    const prev = previewRef.current
+    if (prev && isSameStructure(prev, next)) return
+    previewRef.current = next
+    setPreviewTick((n) => n + 1)
+  }
+
   // —— 布局：预览序 → 测高坐标 ——
   const flatIds = useMemo(
     () => props.groups.flatMap((g) => g.items.map((it) => it.id)).join('|'),
@@ -299,26 +462,14 @@ export function GroupedSortList<T extends { id: string }>(
       }
       return committedRef.current
     }
-    if (activeId == null || activeY == null || !hasMoved) {
+    if (activeId == null || !hasMoved) {
       previewRef.current = null
       return props.groups
     }
-    const activeH = heightOf(activeId, heights, fallbackH)
-    const baseGroups = previewRef.current || props.groups
-    const next = reorderGroups(
-      baseGroups,
-      activeId,
-      activeY,
-      activeH,
-      heights,
-      fallbackH,
-      headerH,
-    )
-    const prev = previewRef.current
-    if (prev && isSameStructure(prev, next)) return prev
-    previewRef.current = next
-    return next
-  }, [props.groups, activeId, activeY, hasMoved, heights, fallbackH, headerH])
+    return previewRef.current || props.groups
+    // previewTick：插入位变化时刷新
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.groups, activeId, hasMoved, previewTick])
 
   const layout = useMemo(
     () => layoutGroups(displayGroups, heights, fallbackH, headerH),
@@ -331,7 +482,7 @@ export function GroupedSortList<T extends { id: string }>(
 
   const pushTransition =
     dragging && hasMoved
-      ? 'transform 0.22s cubic-bezier(0.22, 1, 0.36, 1)'
+      ? 'transform 0.18s cubic-bezier(0.22, 1, 0.36, 1)'
       : 'none'
 
   // 按 id 稳定渲染，松手后 props 重排时不闪 DOM
@@ -346,6 +497,56 @@ export function GroupedSortList<T extends { id: string }>(
     [layout.items, activeId],
   )
 
+  const floatContent = useMemo(() => {
+    if (!activeLayoutItem) return null
+    return props.renderItem(activeLayoutItem.data, {
+      dragging: true,
+      isLast: activeLayoutItem.isLast,
+      isFirstInGroup: activeLayoutItem.isFirstInGroup,
+    })
+    // 跟手帧不重建浮层内容
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLayoutItem?.id, activeLayoutItem?.height, activeId])
+
+  const itemContentById = useMemo(() => {
+    const map = new Map<string, ReactNode>()
+    layout.items.forEach((item) => {
+      map.set(
+        item.id,
+        props.renderItem(item.data, {
+          dragging: false,
+          isLast: item.isLast,
+          isFirstInGroup: item.isFirstInGroup,
+        }),
+      )
+    })
+    return map
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout.items, props.layoutKey, flatIds])
+
+  const headerContentById = useMemo(() => {
+    const map = new Map<string, ReactNode>()
+    layout.headers.forEach((h) => {
+      const group = displayGroups.find((g) => g.id === h.groupId)
+      if (!group) return
+      map.set(
+        h.groupId,
+        props.renderHeader ? (
+          props.renderHeader(group, { dragging, isFirst: h.isFirst })
+        ) : (
+          <>
+            <Text className='grouped-sort__header-title'>{h.title}</Text>
+            {!!h.subtitle && (
+              <Text className='grouped-sort__header-sub'>{h.subtitle}</Text>
+            )}
+          </>
+        ),
+      )
+    })
+    return map
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout.headers, displayGroups, dragging])
+
   const footerY = contentH
   const spineTop = headerH / 2
   const spineBottom = footerH
@@ -358,6 +559,7 @@ export function GroupedSortList<T extends { id: string }>(
   const spineHeight = Math.max(0, spineBottom - spineTop)
 
   const riseDelayByKey = useMemo(() => {
+    if (!enterAnim) return {} as Record<string, number>
     const nodes: Array<{ key: string; y: number }> = layout.headers.map((h) => ({
       key: `h-${h.groupId}`,
       y: h.y,
@@ -372,7 +574,7 @@ export function GroupedSortList<T extends { id: string }>(
       map[n.key] = 80 + Math.min(i, 16) * 72
     })
     return map
-  }, [layout.headers, layout.items, footerH, footerY])
+  }, [enterAnim, layout.headers, layout.items, footerH, footerY])
 
   // —— 测高 / 视口 ——
   const measureScrollRect = () => {
@@ -471,9 +673,12 @@ export function GroupedSortList<T extends { id: string }>(
     }
     const y = (activeYRef.current ?? areaY) + delta
     activeYRef.current = y
-    setActiveY(y)
-    hasMovedRef.current = true
-    setHasMoved(true)
+    setFloatY(y)
+    if (!hasMovedRef.current) {
+      hasMovedRef.current = true
+      setHasMoved(true)
+    }
+    syncPreviewOrder(y)
     return true
   }
 
@@ -543,7 +748,8 @@ export function GroupedSortList<T extends { id: string }>(
       dragRafRef.current = null
       const pending = pendingDragYRef.current
       if (!pending || !activeIdRef.current) return
-      setActiveY(pending.y)
+      setFloatY(pending.y)
+      syncPreviewOrder(pending.y)
       ensureAutoScroll(pending.y, pending.clientY)
     })
   }
@@ -573,10 +779,11 @@ export function GroupedSortList<T extends { id: string }>(
     }
 
     setActiveId(null)
-    setActiveY(null)
+    setFloatY(null)
     setOriginY(null)
     setHasMoved(false)
     hasMovedRef.current = false
+    setPreviewTick(0)
     setContentShift(0)
     setDragLockScroll(null)
     applyProgramScroll(nudgeScroll(finalScroll))
@@ -603,9 +810,10 @@ export function GroupedSortList<T extends { id: string }>(
     activeYRef.current = baseY
     hasMovedRef.current = false
     setActiveId(id)
-    setActiveY(baseY)
+    setFloatY(baseY)
     setOriginY(baseY)
     setHasMoved(false)
+    setPreviewTick(0)
 
     // 用真实节点矩形校准抓取偏移（不改高度）
     Taro.nextTick(() => {
@@ -650,7 +858,7 @@ export function GroupedSortList<T extends { id: string }>(
             originYRef.current = contentY
             activeYRef.current = contentY
             setOriginY(contentY)
-            setActiveY(contentY)
+            setFloatY(contentY)
           }
         })
     })
@@ -729,9 +937,39 @@ export function GroupedSortList<T extends { id: string }>(
   }
 
   const onItemTap = (id: string) => {
-    if (dragging || ignoreClickRef.current || hasMovedRef.current) return
+    if (activeIdRef.current || ignoreClickRef.current || hasMovedRef.current) return
     props.onItemClick?.(id)
   }
+
+  const stableTouchStart = useCallback(
+    (id: string, baseY: number, e: unknown) => {
+      onItemTouchStart(
+        id,
+        baseY,
+        e as { touches?: Array<{ clientX?: number; clientY?: number }> },
+      )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+  const stableLongPress = useCallback((id: string, baseY: number) => {
+    onItemLongPress(id, baseY)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const stableTouchMove = useCallback((e: unknown) => {
+    onItemTouchMove(
+      e as { touches?: Array<{ clientX?: number; clientY?: number }> },
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const stableTouchEnd = useCallback(() => {
+    onItemTouchEnd()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const stableTap = useCallback((id: string) => {
+    onItemTap(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <View
@@ -776,47 +1014,18 @@ export function GroupedSortList<T extends { id: string }>(
             />
           ) : null}
 
-          {layout.headers.map((h) => {
-            const group = displayGroups.find((g) => g.id === h.groupId)
-            const riseDelay = riseDelayByKey[`h-${h.groupId}`] ?? 0
-            return (
-              <View
-                key={`h-${h.groupId}`}
-                className='grouped-sort__header'
-                style={{
-                  transform: `translate3d(0, ${h.y}px, 0)`,
-                  height: `${headerH}px`,
-                  transition: pushTransition,
-                }}
-              >
-                <View
-                  className={
-                    enterAnim ? 'grouped-sort__rise' : undefined
-                  }
-                  style={{
-                    height: '100%',
-                    ...(enterAnim
-                      ? { animationDelay: `${riseDelay}ms` }
-                      : null),
-                  }}
-                >
-                  {group && props.renderHeader ? (
-                    props.renderHeader(group, {
-                      dragging,
-                      isFirst: h.isFirst,
-                    })
-                  ) : (
-                    <>
-                      <Text className='grouped-sort__header-title'>{h.title}</Text>
-                      {!!h.subtitle && (
-                        <Text className='grouped-sort__header-sub'>{h.subtitle}</Text>
-                      )}
-                    </>
-                  )}
-                </View>
-              </View>
-            )
-          })}
+          {layout.headers.map((h) => (
+            <HeaderRow
+              key={`h-${h.groupId}`}
+              y={h.y}
+              height={headerH}
+              transition={pushTransition}
+              enterAnim={enterAnim}
+              riseDelay={riseDelayByKey[`h-${h.groupId}`] ?? 0}
+            >
+              {headerContentById.get(h.groupId)}
+            </HeaderRow>
+          ))}
 
           {activeLayoutItem ? (
             <View
@@ -839,75 +1048,30 @@ export function GroupedSortList<T extends { id: string }>(
             </View>
           ) : null}
 
-          {stableItems.map((item) => {
-            const isActive = item.id === activeId
-            const riseDelay = riseDelayByKey[`i-${item.id}`] ?? 0
-            return (
-              <View
-                key={item.id}
-                id={`gsl-item-${item.id}`}
-                className={`grouped-sort__item${
-                  isActive
-                    ? ' grouped-sort__item--hole'
-                    : ' grouped-sort__item--rest'
-                }`}
-                style={{
-                  transform: `translate3d(0, ${item.baseY}px, 0)`,
-                  minHeight: `${item.height}px`,
-                  transition: isActive ? 'none' : pushTransition,
-                  opacity: isActive ? 0 : 1,
-                }}
-                onTouchStart={(e) =>
-                  onItemTouchStart(item.id, item.baseY, e as never)
-                }
-                onLongPress={() => onItemLongPress(item.id, item.baseY)}
-                onTouchMove={(e) => onItemTouchMove(e as never)}
-                onTouchEnd={onItemTouchEnd}
-                onTouchCancel={onItemTouchEnd}
-                onClick={() => onItemTap(item.id)}
-              >
-                <View
-                  className={`grouped-sort__item-inner${
-                    enterAnim && !isActive ? ' grouped-sort__rise' : ''
-                  }`}
-                  style={
-                    enterAnim && !isActive
-                      ? { animationDelay: `${riseDelay}ms` }
-                      : undefined
-                  }
-                >
-                  <View
-                    id={`gsl-measure-${item.id}`}
-                    className='gsl-measure'
-                    data-id={item.id}
-                  >
-                    {props.renderItem(item.data, {
-                      dragging: false,
-                      isLast: item.isLast,
-                      isFirstInGroup: item.isFirstInGroup,
-                    })}
-                  </View>
-                </View>
-              </View>
-            )
-          })}
-
-          {dragging && activeLayoutItem && activeY != null ? (
-            <View
-              className='grouped-sort__item grouped-sort__item--float'
-              style={{
-                transform: `translate3d(0, ${activeY}px, 0)`,
-                height: `${activeLayoutItem.height}px`,
-              }}
+          {stableItems.map((item) => (
+            <ItemRow
+              key={item.id}
+              id={item.id}
+              baseY={item.baseY}
+              height={item.height}
+              isActive={item.id === activeId}
+              transition={pushTransition}
+              enterAnim={enterAnim}
+              riseDelay={riseDelayByKey[`i-${item.id}`] ?? 0}
+              onTouchStart={stableTouchStart}
+              onLongPress={stableLongPress}
+              onTouchMove={stableTouchMove}
+              onTouchEnd={stableTouchEnd}
+              onTap={stableTap}
             >
-              <View className='grouped-sort__item-inner'>
-                {props.renderItem(activeLayoutItem.data, {
-                  dragging: true,
-                  isLast: activeLayoutItem.isLast,
-                  isFirstInGroup: activeLayoutItem.isFirstInGroup,
-                })}
-              </View>
-            </View>
+              {itemContentById.get(item.id)}
+            </ItemRow>
+          ))}
+
+          {dragging && activeLayoutItem && floatY != null && floatContent ? (
+            <FloatRow y={floatY} height={activeLayoutItem.height}>
+              {floatContent}
+            </FloatRow>
           ) : null}
 
           {props.footerSlot ? (

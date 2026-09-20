@@ -3,6 +3,7 @@ import { MovableArea, MovableView, ScrollView, View, Text } from '@tarojs/compon
 import Taro from '@tarojs/taro'
 import { useEffect, useRef, useState } from 'react'
 import type { TravelPlan } from '../../types'
+import { MapPinPlus } from 'lucide-react-taro/icons/map-pin-plus'
 import { SquarePen } from 'lucide-react-taro/icons/square-pen'
 import { Trash2 } from 'lucide-react-taro/icons/trash-2'
 import { deletePlan, getAppDataExportJson, listPlans } from '../../services/storage'
@@ -11,16 +12,36 @@ import './index.scss'
 /** 编辑 + 删除按钮总宽，与样式一致（设计稿 px） */
 const ACTION_WIDTH = 280
 
-function PlanMeta({ plan }: { plan: TravelPlan }) {
+function PlanMeta({
+  plan,
+  onAddPlace,
+}: {
+  plan: TravelPlan
+  onAddPlace: (id: string) => void
+}) {
   return (
     <>
-      <View className='plan-item__name'>{plan.name}</View>
-      {!!plan.startDate && (
-        <View className='plan-item__meta'>{plan.startDate}</View>
-      )}
-      {!!plan.description && (
-        <View className='plan-item__desc'>{plan.description}</View>
-      )}
+      <View className='plan-item__top'>
+        <View className='plan-item__main'>
+          <View className='plan-item__name'>{plan.name}</View>
+          {!!plan.startDate && (
+            <View className='plan-item__meta'>{plan.startDate}</View>
+          )}
+          {!!plan.description && (
+            <View className='plan-item__desc'>{plan.description}</View>
+          )}
+        </View>
+        <View
+          className='plan-item__add-place'
+          onClick={(e) => {
+            e.stopPropagation()
+            onAddPlace(plan.id)
+          }}
+        >
+          <MapPinPlus size={16} color='#1a5f4a' />
+          <Text className='plan-item__add-place-text'>添加地点</Text>
+        </View>
+      </View>
     </>
   )
 }
@@ -31,6 +52,7 @@ function PlanSwipeRow({
   onOpen,
   onClose,
   onOpenDetail,
+  onAddPlace,
   onEdit,
   onDelete,
 }: {
@@ -39,6 +61,7 @@ function PlanSwipeRow({
   onOpen: (id: string) => void
   onClose: (id: string) => void
   onOpenDetail: (id: string) => void
+  onAddPlace: (id: string) => void
   onEdit: (id: string) => void
   onDelete: (plan: TravelPlan) => void
 }) {
@@ -94,7 +117,7 @@ function PlanSwipeRow({
   return (
     <View className='plan-swipe'>
       <View className='plan-swipe__sizer'>
-        <PlanMeta plan={plan} />
+        <PlanMeta plan={plan} onAddPlace={onAddPlace} />
       </View>
       <MovableArea className='plan-swipe__area' style={{ width: '100%', height: '100%' }}>
         <MovableView
@@ -138,7 +161,7 @@ function PlanSwipeRow({
               onOpenDetail(plan.id)
             }}
           >
-            <PlanMeta plan={plan} />
+            <PlanMeta plan={plan} onAddPlace={onAddPlace} />
           </View>
           <View id={`plan-actions-${plan.id}`} className='plan-swipe__actions'>
             <View
@@ -194,6 +217,10 @@ export default function IndexPage() {
 
   const goDetail = (id: string) => {
     Taro.navigateTo({ url: `/pages/plan-view/index?id=${id}` })
+  }
+
+  const goAddPlace = (id: string) => {
+    Taro.navigateTo({ url: `/pages/place-add/index?id=${id}` })
   }
 
   const goEdit = (id: string) => {
@@ -255,6 +282,7 @@ export default function IndexPage() {
               onOpen={setOpenId}
               onClose={() => setOpenId(null)}
               onOpenDetail={goDetail}
+              onAddPlace={goAddPlace}
               onEdit={goEdit}
               onDelete={onDelete}
             />
