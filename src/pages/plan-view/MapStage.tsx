@@ -1,16 +1,18 @@
 import { View, Text, Input, ScrollView, RichText } from '@tarojs/components'
-import { useState } from 'react'
+import { memo, useState, type MutableRefObject } from 'react'
 import Taro from '@tarojs/taro'
 import { Navigation } from 'lucide-react-taro/icons/navigation'
 import { MapPin } from 'lucide-react-taro/icons/map-pin'
 import { Star } from 'lucide-react-taro/icons/star'
+import { PlanMap } from '../../components/sheet-map'
 import type { PlaceInfo, CollectedPlace } from '../../types'
 import { formatDistance } from '../../utils/datetime'
 import { isSamePlace, placeInfoRows } from './place-info'
-import { PlanMap } from './PlanMap'
 import type { MapUiMode, PreviewKind, SheetPos } from './types'
 
 export type MapStageProps = {
+  mapId: string
+  gesturingRef: MutableRefObject<boolean>
   mapCenter: { latitude: number; longitude: number }
   mapScale: number
   markers: Array<Record<string, unknown>>
@@ -100,8 +102,89 @@ function HighlightText({
   )
 }
 
+type SheetSearchExpandedBarProps = {
+  keyword: string
+  inputFocus: boolean
+  sheetIsTop: boolean
+  onKeywordInput: (value: string) => void
+  onSearchFocus: () => void
+  onSearchBlur: () => void
+  goToTop: () => void
+  goToBottom: () => void
+  onSheetTouchStart: (e: { touches: Array<{ clientY: number }> }) => void
+  onSheetTouchMove: (e: { touches: Array<{ clientY: number }> }) => void
+  onSheetTouchEnd: (e: {
+    changedTouches?: Array<{ clientY: number }>
+    touches?: Array<{ clientY: number }>
+  }) => void
+}
+
+/**
+ * 与结果列表 / 地图中心隔离：搜索结果更新时不重绘 Input，
+ * 避免微信受控输入在拼音组字时被掐断。
+ */
+const SheetSearchExpandedBar = memo(
+  function SheetSearchExpandedBar({
+    keyword,
+    inputFocus,
+    sheetIsTop,
+    onKeywordInput,
+    onSearchFocus,
+    onSearchBlur,
+    goToTop,
+    goToBottom,
+    onSheetTouchStart,
+    onSheetTouchMove,
+    onSheetTouchEnd,
+  }: SheetSearchExpandedBarProps) {
+    return (
+      <View
+        className='sheet__search-bar'
+        onTouchStart={onSheetTouchStart as never}
+        onTouchMove={onSheetTouchMove as never}
+        onTouchEnd={onSheetTouchEnd as never}
+        onTouchCancel={onSheetTouchEnd as never}
+      >
+        <View
+          className='sheet__input-wrap'
+          onClick={(e) => {
+            e.stopPropagation()
+            goToTop()
+          }}
+        >
+          <Input
+            className='sheet__input'
+            value={keyword}
+            focus={inputFocus && sheetIsTop}
+            placeholder='搜索地点'
+            confirmType='search'
+            onInput={(e) => onKeywordInput(e.detail.value)}
+            onFocus={onSearchFocus}
+            onBlur={onSearchBlur}
+          />
+        </View>
+        <View
+          className='sheet__cancel'
+          onClick={(e) => {
+            e.stopPropagation()
+            goToBottom()
+          }}
+        >
+          关闭
+        </View>
+      </View>
+    )
+  },
+  (prev, next) =>
+    prev.keyword === next.keyword &&
+    prev.inputFocus === next.inputFocus &&
+    prev.sheetIsTop === next.sheetIsTop,
+)
+
 export function MapStage(props: MapStageProps) {
   const {
+    mapId,
+    gesturingRef,
     mapCenter,
     mapScale,
     markers,
@@ -157,10 +240,13 @@ export function MapStage(props: MapStageProps) {
   return (
 <View className='map-stage'>
   <PlanMap
+    mapId={mapId}
+    gesturingRef={gesturingRef}
     latitude={mapCenter.latitude}
     longitude={mapCenter.longitude}
     scale={mapScale}
     markers={markers as Array<Record<string, unknown>>}
+    className='map-stage__map'
     onRegionChange={stableOnRegionChange}
     onMarkertap={stableOnMarkerTap}
     onPoiTap={stableOnPoiTap}
@@ -205,41 +291,19 @@ export function MapStage(props: MapStageProps) {
     </View>
 
     {(sheetPos === 'top' || sheetPos === 'middle') && (
-      <View
-        className='sheet__search-bar'
-        onTouchStart={onSheetTouchStart as never}
-        onTouchMove={onSheetTouchMove as never}
-        onTouchEnd={onSheetTouchEnd as never}
-        onTouchCancel={onSheetTouchEnd as never}
-      >
-        <View
-          className='sheet__input-wrap'
-          onClick={(e) => {
-            e.stopPropagation()
-            goToTop()
-          }}
-        >
-          <Input
-            className='sheet__input'
-            value={keyword}
-            focus={inputFocus && sheetPos === 'top'}
-            placeholder='搜索地点'
-            confirmType='search'
-            onInput={(e) => onKeywordInput(e.detail.value)}
-            onFocus={onSearchFocus}
-            onBlur={onSearchBlur}
-          />
-        </View>
-        <View
-          className='sheet__cancel'
-          onClick={(e) => {
-            e.stopPropagation()
-            goToBottom()
-          }}
-        >
-          关闭
-        </View>
-      </View>
+      <SheetSearchExpandedBar
+        keyword={keyword}
+        inputFocus={inputFocus}
+        sheetIsTop={sheetPos === 'top'}
+        onKeywordInput={onKeywordInput}
+        onSearchFocus={onSearchFocus}
+        onSearchBlur={onSearchBlur}
+        goToTop={goToTop}
+        goToBottom={goToBottom}
+        onSheetTouchStart={onSheetTouchStart}
+        onSheetTouchMove={onSheetTouchMove}
+        onSheetTouchEnd={onSheetTouchEnd}
+      />
     )}
 
     {showSheetBody && (

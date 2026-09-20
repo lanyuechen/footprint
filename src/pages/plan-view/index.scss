@@ -107,7 +107,7 @@
 
 .trip-sheet {
   &.sheet--bottom {
-    height: 240px;
+    height: 180px;
   }
 
   &__summary {
@@ -378,23 +378,18 @@
   pointer-events: none;
   /* 用实际可视高度，保证内部 ScrollView 可滚完；避免 height:100% + translate 裁切 */
   height: 168px;
-  transition:
-    height 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-    border-radius 0.32s ease;
+  transition: height 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 
   &--bottom {
     height: 168px;
-    border-radius: 24px 24px 0 0;
   }
 
   &--middle {
     height: 52vh;
-    border-radius: 24px 24px 0 0;
   }
 
   &--top {
     height: 100%;
-    border-radius: 0;
     box-shadow: none;
   }
 
@@ -717,8 +712,12 @@
 
   &__detail-divider {
     height: 1px;
-    margin: 8px 0 16px;
+    margin: 16px 0 8px;
     background: #d7ebe3;
+  }
+
+  &__detail-note {
+    min-height: 48px;
   }
 
   &__detail-html,
@@ -875,5 +874,117 @@
       color: #fff;
       background: #1a5f4a;
     }
+  }
+
+  &__sheet--edit {
+    max-height: 82vh;
+  }
+
+  &__list--edit {
+    max-height: none;
+    padding-bottom: 8px;
+  }
+}
+
+.type-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 12px;
+  padding: 8px 0 24px;
+
+  &__item {
+    width: calc((100% - 36px) / 4);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 4px;
+    border-radius: 12px;
+    border: 2px solid transparent;
+
+    &--on {
+      background: #e8f2ee;
+      border-color: #1a5f4a;
+    }
+  }
+
+  &__icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  &__label {
+    font-size: 22px;
+    color: #3d4450;
+    text-align: center;
+    line-height: 1.3;
+  }
+}
+
+.card-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 8px 0 16px;
+
+  &__field {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  &__label {
+    font-size: 24px;
+    color: #8a9199;
+  }
+
+  &__input {
+    box-sizing: border-box;
+    height: 80px;
+    padding: 0 20px;
+    border-radius: 12px;
+    background: #f5f7f6;
+    font-size: 28px;
+    color: #1f2329;
+  }
+
+  &__picker {
+    box-sizing: border-box;
+    min-height: 80px;
+    padding: 0 20px;
+    border-radius: 12px;
+    background: #f5f7f6;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  &__picker-text {
+    font-size: 28px;
+    color: #1f2329;
+  }
+
+  &__picker-hint {
+    flex-shrink: 0;
+    font-size: 22px;
+    color: #8a9199;
+  }
+
+  &__textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 160px;
+    padding: 20px;
+    border-radius: 12px;
+    background: #f5f7f6;
+    font-size: 28px;
+    color: #1f2329;
+    line-height: 1.5;
   }
 }

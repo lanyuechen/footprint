@@ -13,6 +13,7 @@ import {
   reorderPlanStops,
   setLastPlanView,
   setPlanDayCount,
+  updatePlaceInfo,
   updateStopExpectedAt,
 } from '../../services/storage'
 import { TimelineView } from './TimelineView'
@@ -110,6 +111,15 @@ export default function PlanViewPage() {
               return
             }
             setStops(listStopsByPlan(planId))
+            refreshPlanMeta(planId)
+          }}
+          onUpdatePlace={(placeId, input) => {
+            const updated = updatePlaceInfo(placeId, input)
+            if (!updated || !planId) {
+              Taro.showToast({ title: '保存失败', icon: 'none' })
+              return
+            }
+            setPlaces(listPlacesByPlan(planId))
             refreshPlanMeta(planId)
           }}
           onReorderGroups={(groups) => {

@@ -73,6 +73,56 @@ const PLACE_TRANSIT_MARKS: Record<string, AxisMark> = {
 
 const PLACE_PARK_MARK: AxisMark = { icon: Trees, color: '#84cc16', marker: 'trees' }
 
+/** 可选手动覆盖的地点类型（影响时间轴图标） */
+export type PlaceTypeOption = {
+  label: string
+  type: string
+  typecode: string
+  mark: AxisMark
+}
+
+export const PLACE_TYPE_OPTIONS: PlaceTypeOption[] = [
+  { label: '地点', type: '', typecode: '', mark: AXIS_DEFAULT },
+  { label: '餐饮', type: '餐饮服务', typecode: '050000', mark: PLACE_MAJOR_MARKS['05'] },
+  { label: '酒店', type: '住宿服务', typecode: '100000', mark: PLACE_MAJOR_MARKS['10'] },
+  { label: '景点', type: '风景名胜', typecode: '110000', mark: PLACE_MAJOR_MARKS['11'] },
+  { label: '公园', type: '风景名胜;公园', typecode: '110101', mark: PLACE_PARK_MARK },
+  { label: '购物', type: '购物服务', typecode: '060000', mark: PLACE_MAJOR_MARKS['06'] },
+  { label: '生活服务', type: '生活服务', typecode: '070000', mark: PLACE_MAJOR_MARKS['07'] },
+  { label: '医疗', type: '医疗保健服务', typecode: '090000', mark: PLACE_MAJOR_MARKS['09'] },
+  { label: '科教', type: '科教文化服务', typecode: '140000', mark: PLACE_MAJOR_MARKS['14'] },
+  { label: '政府机构', type: '政府机构及社会团体', typecode: '130000', mark: PLACE_MAJOR_MARKS['13'] },
+  { label: '公司企业', type: '公司企业', typecode: '170000', mark: PLACE_MAJOR_MARKS['17'] },
+  { label: '金融', type: '金融保险服务', typecode: '160000', mark: PLACE_MAJOR_MARKS['16'] },
+  { label: '体育休闲', type: '体育休闲服务', typecode: '080000', mark: PLACE_MAJOR_MARKS['08'] },
+  { label: '商务住宅', type: '商务住宅', typecode: '120000', mark: PLACE_MAJOR_MARKS['12'] },
+  { label: '汽车服务', type: '汽车服务', typecode: '010000', mark: PLACE_MAJOR_MARKS['01'] },
+  { label: '机场', type: '交通设施服务;机场', typecode: '150100', mark: PLACE_TRANSIT_MARKS['1501'] },
+  { label: '火车站', type: '交通设施服务;火车站', typecode: '150200', mark: PLACE_TRANSIT_MARKS['1502'] },
+  { label: '地铁站', type: '交通设施服务;地铁站', typecode: '150500', mark: PLACE_TRANSIT_MARKS['1505'] },
+  { label: '公交站', type: '交通设施服务;公交车站', typecode: '150700', mark: PLACE_TRANSIT_MARKS['1507'] },
+  { label: '港口码头', type: '交通设施服务;港口码头', typecode: '150300', mark: PLACE_TRANSIT_MARKS['1503'] },
+  { label: '停车场', type: '交通设施服务;停车场', typecode: '150900', mark: PLACE_TRANSIT_MARKS['1509'] },
+  { label: '通行票务', type: '通行设施', typecode: '220000', mark: PLACE_MAJOR_MARKS['22'] },
+]
+
+export function matchPlaceTypeOption(place: PlaceInfo): PlaceTypeOption {
+  const mark = placeAxisMark(place)
+  const byMarker = PLACE_TYPE_OPTIONS.find((o) => o.mark.marker === mark.marker)
+  return byMarker || PLACE_TYPE_OPTIONS[0]
+}
+
+export function applyPlaceTypeOption(
+  place: PlaceInfo,
+  option: PlaceTypeOption,
+): PlaceInfo {
+  return {
+    ...place,
+    type: option.type || undefined,
+    typecode: option.typecode || undefined,
+  }
+}
+
 export function placeAxisMark(place: PlaceInfo): AxisMark {
   const code = (place.typecode || '').split('|')[0].replace(/\D/g, '')
   const transit = PLACE_TRANSIT_MARKS[code.slice(0, 4)]

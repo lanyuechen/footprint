@@ -157,6 +157,107 @@ function normalizePlan(raw: Record<string, unknown>): TravelPlan | null {
   }
 }
 
+function writeStore(store: AppDataStore): void {
+  Taro.setStorageSync(STORAGE_KEYS.APP_DATA, { ...store, version: DATA_VERSION })
+}
+
+/** 将导出的 JSON / 原始对象解析为可写入的 store（含旧版迁移） */
+function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
+  if (Array.isArray(data.points) && !Array.isArray(data.places)) {
+    return migrateV1(data)
+  }
+
+  if (!Array.isArray(data.plans)) {
+    throw new Error('缺少 plans 字段')
+  }
+
+  const placesIn = Array.isArray(data.places) ? data.places : []
+  const stopsIn = Array.isArray(data.stops) ? data.stops : []
+  const places: CollectedPlace[] = []
+  for (const item of placesIn) {
+    if (!item || typeof item !== 'object') continue
+    const p = item as Record<string, unknown>
+    const id = String(p.id || '')
+    const planId = String(p.planId || '')
+    const place = p.place
+    if (!id || !planId || !place || typeof place !== 'object') continue
+    const info = place as PlaceInfo
+    if (
+      typeof info.latitude !== 'number' ||
+      typeof info.longitude !== 'number' ||
+      !info.name
+    ) {
+      continue
+    }
+    places.push({
+      id,
+      planId,
+      place: info,
+      createdAt: String(p.createdAt || nowIso()),
+      updatedAt: String(p.updatedAt || nowIso()),
+      noteHtml: typeof p.noteHtml === 'string' ? p.noteHtml : undefined,
+      noteText: typeof p.noteText === 'string' ? p.noteText : undefined,
+      extra:
+        p.extra && typeof p.extra === 'object'
+          ? (p.extra as Record<string, unknown>)
+          : undefined,
+    })
+  }
+
+  const stops: TripStop[] = []
+  for (const item of stopsIn) {
+    if (!item || typeof item !== 'object') continue
+    const s = item as Record<string, unknown>
+    const id = String(s.id || '')
+    const planId = String(s.planId || '')
+    const placeId = String(s.placeId || '')
+    const expectedAt = String(s.expectedAt || '')
+    if (!id || !planId || !placeId || !expectedAt) continue
+    stops.push({
+      id,
+      planId,
+      placeId,
+      expectedAt,
+      createdAt: String(s.createdAt || nowIso()),
+      updatedAt: String(s.updatedAt || nowIso()),
+      noteHtml: typeof s.noteHtml === 'string' ? s.noteHtml : undefined,
+      noteText: typeof s.noteText === 'string' ? s.noteText : undefined,
+      extra:
+        s.extra && typeof s.extra === 'object'
+          ? (s.extra as Record<string, unknown>)
+          : undefined,
+    })
+  }
+
+  const plans = (data.plans as Array<Record<string, unknown>>)
+    .map(normalizePlan)
+    .filter((p): p is TravelPlan => !!p)
+
+  const store: AppDataStore = {
+    version: DATA_VERSION,
+    currentUserId: (data.currentUserId as string | null) ?? null,
+    plans,
+    places,
+    stops,
+  }
+
+  const prevVersion = Number(data.version) || 0
+  if (prevVersion < 3) {
+    for (const plan of store.plans) {
+      const ordered = store.stops
+        .filter((s) => s.planId === plan.id)
+        .sort(
+          (a, b) =>
+            new Date(a.expectedAt).getTime() - new Date(b.expectedAt).getTime(),
+        )
+        .map((s) => s.id)
+      plan.stopIds = ordered
+    }
+  }
+
+  return store
+}
+
 function readStore(): AppDataStore {
   try {
     const raw = Taro.getStorageSync(STORAGE_KEYS.APP_DATA)
@@ -167,50 +268,18 @@ function readStore(): AppDataStore {
         : (raw as Record<string, unknown>)
     if (!data || typeof data !== 'object') return createEmptyStore()
 
-    // v1：只有 points，没有 places
-    if (Array.isArray(data.points) && !Array.isArray(data.places)) {
-      const migrated = migrateV1(data)
-      writeStore(migrated)
-      return migrated
-    }
-
-    if (!Array.isArray(data.plans)) return createEmptyStore()
-    const places = Array.isArray(data.places) ? (data.places as CollectedPlace[]) : []
-    const stops = Array.isArray(data.stops) ? (data.stops as TripStop[]) : []
-    const plans = (data.plans as Array<Record<string, unknown>>)
-      .map(normalizePlan)
-      .filter((p): p is TravelPlan => !!p)
-
-    const store: AppDataStore = {
-      version: DATA_VERSION,
-      currentUserId: (data.currentUserId as string | null) ?? null,
-      plans,
-      places,
-      stops,
-    }
+    const store = parseAppDataPayload(data)
     const prevVersion = Number(data.version) || 0
-    // v3：行程顺序改由 stopIds 决定；用 expectedAt 固化旧版时间排序视觉
-    if (prevVersion < 3) {
-      for (const plan of store.plans) {
-        const ordered = store.stops
-          .filter((s) => s.planId === plan.id)
-          .sort(
-            (a, b) =>
-              new Date(a.expectedAt).getTime() - new Date(b.expectedAt).getTime(),
-          )
-          .map((s) => s.id)
-        plan.stopIds = ordered
-      }
+    if (
+      (Array.isArray(data.points) && !Array.isArray(data.places)) ||
+      prevVersion !== DATA_VERSION
+    ) {
+      writeStore(store)
     }
-    if (prevVersion !== DATA_VERSION) writeStore(store)
     return store
   } catch {
     return createEmptyStore()
   }
-}
-
-function writeStore(store: AppDataStore): void {
-  Taro.setStorageSync(STORAGE_KEYS.APP_DATA, { ...store, version: DATA_VERSION })
 }
 
 export function listPlans(): TravelPlan[] {
@@ -295,6 +364,199 @@ export function deletePlan(planId: string): boolean {
   return true
 }
 
+/** 地点去重指纹：优先 poiId，否则 name + 坐标（约 1m） */
+function placeDedupeKey(place: PlaceInfo): string {
+  const poiId = place.poiId?.trim()
+  if (poiId) return `poi:${poiId}`
+  const lat = Number(place.latitude.toFixed(5))
+  const lng = Number(place.longitude.toFixed(5))
+  return `geo:${place.name.trim()}|${lat}|${lng}`
+}
+
+function addDaysToDatePart(datePart: string, days: number): string {
+  const d = new Date(`${datePart}T12:00:00`)
+  if (Number.isNaN(d.getTime())) return datePart
+  d.setDate(d.getDate() + days)
+  return toDatePart(d.toISOString())
+}
+
+function datePartDiffDays(from: string, to: string): number {
+  const a = new Date(`${from}T12:00:00`)
+  const b = new Date(`${to}T12:00:00`)
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return 0
+  return Math.round((b.getTime() - a.getTime()) / 86400000)
+}
+
+export type MergePlansResult =
+  | {
+      ok: true
+      plan: TravelPlan
+      mergedPlaceCount: number
+      mergedStopCount: number
+      sourcePlanCount: number
+    }
+  | { ok: false; message: string }
+
+/**
+ * 将多个计划合并为新计划（原计划保留不动）：
+ * - 收藏地点去重后复制到新计划
+ * - 日程按各计划原顺序依次复制，地点引用指向新计划内去重后的收藏
+ */
+export function mergePlans(planIds: string[]): MergePlansResult {
+  const orderedIds = [...new Set(planIds.filter(Boolean))]
+  if (orderedIds.length < 2) {
+    return { ok: false, message: '请至少选择两个计划' }
+  }
+
+  const store = readStore()
+  const plans = orderedIds
+    .map((id) => store.plans.find((p) => p.id === id))
+    .filter((p): p is TravelPlan => !!p)
+  if (plans.length < 2) {
+    return { ok: false, message: '所选计划不存在' }
+  }
+
+  const ts = nowIso()
+  const primary = plans[0]
+  const nameParts = plans.map((p) => p.name.trim()).filter(Boolean)
+  const mergedName =
+    nameParts.length <= 2
+      ? nameParts.join(' + ')
+      : `${nameParts[0]} 等${plans.length}个计划`
+  const descParts = plans
+    .map((p) => p.description.trim())
+    .filter(Boolean)
+  const description =
+    descParts.length > 0
+      ? descParts.join('\n')
+      : `由「${nameParts.join('」「')}」合并生成`
+
+  const dateCandidates: string[] = []
+  for (const plan of plans) {
+    if (plan.startDate) {
+      dateCandidates.push(plan.startDate)
+      dateCandidates.push(
+        addDaysToDatePart(plan.startDate, Math.max(1, plan.dayCount) - 1),
+      )
+    }
+  }
+
+  // 旧 placeId → 新计划内 placeId
+  const placeIdMap = new Map<string, string>()
+  const dedupeMap = new Map<string, string>()
+  const newPlaces: CollectedPlace[] = []
+  const newStops: TripStop[] = []
+  const mergedPlaceIds: string[] = []
+  const mergedStopIds: string[] = []
+
+  const clonePlace = (place: CollectedPlace) => {
+    const key = placeDedupeKey(place.place)
+    const existingId = dedupeMap.get(key)
+    if (existingId) {
+      placeIdMap.set(place.id, existingId)
+      const kept = newPlaces.find((p) => p.id === existingId)
+      if (kept && !kept.noteText?.trim() && place.noteText?.trim()) {
+        kept.noteHtml = place.noteHtml
+        kept.noteText = place.noteText
+        kept.updatedAt = ts
+      }
+      return
+    }
+    const id = genId('place')
+    dedupeMap.set(key, id)
+    placeIdMap.set(place.id, id)
+    const cloned: CollectedPlace = {
+      id,
+      planId: '', // 稍后填入新计划 id
+      place: { ...place.place },
+      createdAt: place.createdAt || ts,
+      updatedAt: ts,
+      noteHtml: place.noteHtml,
+      noteText: place.noteText,
+      extra: place.extra ? { ...place.extra } : undefined,
+    }
+    newPlaces.push(cloned)
+    mergedPlaceIds.push(id)
+  }
+
+  for (const plan of plans) {
+    const placesById = new Map(
+      store.places.filter((p) => p.planId === plan.id).map((p) => [p.id, p]),
+    )
+    const orderedPlaces = [
+      ...plan.placeIds
+        .map((id) => placesById.get(id))
+        .filter((p): p is CollectedPlace => !!p),
+      ...[...placesById.values()].filter((p) => !plan.placeIds.includes(p.id)),
+    ]
+    for (const place of orderedPlaces) clonePlace(place)
+
+    const stopsById = new Map(
+      store.stops.filter((s) => s.planId === plan.id).map((s) => [s.id, s]),
+    )
+    const orderedStops = [
+      ...plan.stopIds
+        .map((id) => stopsById.get(id))
+        .filter((s): s is TripStop => !!s),
+      ...[...stopsById.values()].filter((s) => !plan.stopIds.includes(s.id)),
+    ]
+    for (const stop of orderedStops) {
+      const mappedPlaceId = placeIdMap.get(stop.placeId)
+      if (!mappedPlaceId) continue
+      const id = genId('stop')
+      const cloned: TripStop = {
+        id,
+        planId: '',
+        placeId: mappedPlaceId,
+        expectedAt: stop.expectedAt,
+        createdAt: stop.createdAt || ts,
+        updatedAt: ts,
+        noteHtml: stop.noteHtml,
+        noteText: stop.noteText,
+        extra: stop.extra ? { ...stop.extra } : undefined,
+      }
+      newStops.push(cloned)
+      mergedStopIds.push(id)
+      const part = toDatePart(stop.expectedAt)
+      if (part) dateCandidates.push(part)
+    }
+  }
+
+  const validDates = dateCandidates.filter(Boolean).sort()
+  const startDate = validDates[0] || primary.startDate || todayDatePart()
+  const endDate = validDates[validDates.length - 1] || startDate
+  const dayCount = Math.max(1, datePartDiffDays(startDate, endDate) + 1)
+
+  const newPlan: TravelPlan = {
+    id: genId('plan'),
+    name: mergedName.slice(0, 40),
+    description,
+    startDate,
+    dayCount,
+    placeIds: mergedPlaceIds,
+    stopIds: mergedStopIds,
+    createdAt: ts,
+    updatedAt: ts,
+    userId: store.currentUserId,
+  }
+
+  for (const place of newPlaces) place.planId = newPlan.id
+  for (const stop of newStops) stop.planId = newPlan.id
+
+  store.plans.unshift(newPlan)
+  store.places.push(...newPlaces)
+  store.stops.push(...newStops)
+  writeStore(store)
+
+  return {
+    ok: true,
+    plan: newPlan,
+    mergedPlaceCount: mergedPlaceIds.length,
+    mergedStopCount: mergedStopIds.length,
+    sourcePlanCount: plans.length,
+  }
+}
+
 /** 收藏地点，按收藏时间倒序 */
 export function listPlacesByPlan(planId: string): CollectedPlace[] {
   return readStore()
@@ -355,6 +617,52 @@ export function updatePlaceNote(
     noteHtml: input.noteHtml,
     noteText: input.noteText.trim(),
     updatedAt: ts,
+  }
+  store.places[idx] = place
+  const plan = store.plans.find((p) => p.id === place.planId)
+  if (plan) plan.updatedAt = ts
+  writeStore(store)
+  return place
+}
+
+/** 更新收藏地点的展示信息（标题 / 类型等） */
+export function updatePlaceInfo(
+  placeId: string,
+  input: {
+    name?: string
+    type?: string
+    typecode?: string
+    noteText?: string
+    noteHtml?: string
+  },
+): CollectedPlace | undefined {
+  const store = readStore()
+  const idx = store.places.findIndex((p) => p.id === placeId)
+  if (idx < 0) return undefined
+  const ts = nowIso()
+  const prev = store.places[idx]
+  const nextPlace = { ...prev.place }
+  if (input.name !== undefined) {
+    const name = input.name.trim()
+    if (!name) return undefined
+    nextPlace.name = name
+  }
+  if (input.type !== undefined) {
+    nextPlace.type = input.type.trim() || undefined
+  }
+  if (input.typecode !== undefined) {
+    nextPlace.typecode = input.typecode.trim() || undefined
+  }
+  const place: CollectedPlace = {
+    ...prev,
+    place: nextPlace,
+    updatedAt: ts,
+  }
+  if (input.noteText !== undefined) {
+    place.noteText = input.noteText.trim()
+  }
+  if (input.noteHtml !== undefined) {
+    place.noteHtml = input.noteHtml
   }
   store.places[idx] = place
   const plan = store.plans.find((p) => p.id === place.planId)
@@ -602,4 +910,51 @@ export function listPointsByPlan(planId: string): CollectedPlace[] {
 /** 导出完整应用数据 JSON 文本 */
 export function getAppDataExportJson(): string {
   return JSON.stringify(readStore(), null, 2)
+}
+
+export type ImportAppDataResult =
+  | {
+      ok: true
+      planCount: number
+      placeCount: number
+      stopCount: number
+    }
+  | { ok: false; message: string }
+
+/**
+ * 微信 Text 长按复制常会把空格变成 NBSP(\\u00A0)，导致 JSON.parse 失败。
+ * 导入前先归一化常见 Unicode 空白。
+ */
+function sanitizeImportJsonText(raw: string): string {
+  return raw
+    .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ')
+    .replace(/^\uFEFF/, '')
+}
+
+/** 用导出的 JSON 覆盖本地全部数据 */
+export function importAppDataJson(raw: string): ImportAppDataResult {
+  const text = sanitizeImportJsonText(raw).trim()
+  if (!text) return { ok: false, message: '内容为空' }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return { ok: false, message: 'JSON 格式无效' }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, message: '数据格式无效' }
+  }
+  try {
+    const store = parseAppDataPayload(parsed as Record<string, unknown>)
+    writeStore(store)
+    return {
+      ok: true,
+      planCount: store.plans.length,
+      placeCount: store.places.length,
+      stopCount: store.stops.length,
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '导入失败'
+    return { ok: false, message }
+  }
 }

@@ -1,7 +1,20 @@
 import { useDidShow, useLoad } from '@tarojs/taro'
-import { View, Text } from '@tarojs/components'
+import { View } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { ListTree } from 'lucide-react-taro/icons/list-tree'
+import {
+  DEFAULT_CENTER,
+  MAP_CENTER_EASE_MS,
+  MARKER_ID_SEARCH,
+  SEARCH_DEBOUNCE_MS,
+  coverRatioFromSheetHeight,
+  estimateMapLatSpan,
+  fitMapToPoints,
+  nearlySameCoord,
+  sheetHeightPx,
+  useSheetMapCamera,
+} from '../../components/sheet-map'
 import type { PlaceInfo, CollectedPlace, TravelPlan } from '../../types'
 import {
   distanceMeters,
@@ -17,29 +30,15 @@ import {
   listPlacesByPlan,
   setLastPlanView,
 } from '../../services/storage'
-import {
-  DEFAULT_CENTER,
-  MAP_CENTER_EASE_MS,
-  MARKER_ID_SEARCH,
-  SEARCH_DEBOUNCE_MS,
-  coverRatioFromSheetHeight,
-  easeOutCubic,
-  estimateMapLatSpan,
-  fitMapToPoints,
-  mapUiToSheetPos,
-  nearlySameCoord,
-  offsetCenterForSheet,
-  readLatSpanFromRegion,
-  reverseOffsetCenterForSheet,
-  sheetHeightPx,
-} from '../plan-view/map-geometry'
+import { mapUiToSheetPos } from '../plan-view/map-geometry'
 import { isSamePlace } from '../plan-view/place-info'
 import { markerIconPath } from '../plan-view/place-axis'
-import { PLAN_MAP_ID, mapUserGesturingRef } from '../plan-view/PlanMap'
 import { MapStage } from '../plan-view/MapStage'
 import type { MapUiMode, PreviewKind, SheetPos } from '../plan-view/types'
 import '../plan-view/index.scss'
 import './index.scss'
+
+const PLACE_ADD_MAP_ID = 'place-add-map'
 
 /** 小于该位移视为点按，不算拖拽 */
 const SHEET_TAP_SLOP_PX = 10
@@ -67,8 +66,6 @@ export default function PlaceAddPage() {
   const [previewKind, setPreviewKind] = useState<PreviewKind>('search')
 
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null)
-  const [focusCoord, setFocusCoord] = useState(DEFAULT_CENTER)
-  const [mapScale, setMapScale] = useState(12)
 
   const [keyword, setKeyword] = useState('')
   const [results, setResults] = useState<PlaceInfo[]>([])
@@ -92,10 +89,17 @@ export default function PlaceAddPage() {
     () => new Set(),
   )
 
+  const sheetPos = mapUiToSheetPos(mapUi, leavingSearch)
+  const sheetHeightNow =
+    dragHeightPx != null ? dragHeightPx : sheetHeightPx(sheetPos)
+  const camera = useSheetMapCamera({
+    mapId: PLACE_ADD_MAP_ID,
+    sheetHeightPx: sheetHeightNow,
+    sheetDragging: dragHeightPx != null,
+  })
+
   const searchSeq = useRef(0)
   const skipBrowseRecenter = useRef(false)
-  /** 搜索选点改缩放时，随后的 region 只用来校正视野，不当成用户缩放 */
-  const ownMapMoveRef = useRef(false)
   const selectSpanSeq = useRef(0)
   const lastQueryRef = useRef('')
   const focusTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -115,21 +119,9 @@ export default function PlaceAddPage() {
   const suppressNextSearchClickRef = useRef(false)
   /** 主动聚焦后短时间内的 blur 不撤销焦点 */
   const ignoreBlurUntilRef = useRef(0)
-  const mapCenterDisplayRef = useRef(DEFAULT_CENTER)
   /** 搜索用当前地图关注点，不放进 effect 依赖，避免平移打断防抖 */
   const focusCoordRef = useRef(DEFAULT_CENTER)
-  const mapCenterAnimRaf = useRef<number | null>(null)
-  const sheetCoverRatioRef = useRef(0.12)
-  const mapScaleRef = useRef(12)
-  const mapViewLatSpanRef = useRef(0)
-  const sheetDraggingRef = useRef(false)
-  /** 下次 target 变化只同步 ref，不驱动地图（用于手势结束后的状态对齐） */
-  const suppressCenterFollowRef = useRef(false)
-  /** 忽略由我们改 lat/lng 触发的 regionchange */
-  const ignoreMapRegionRef = useRef(false)
-  const ignoreMapRegionTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** 地图真实可视纬度跨度（来自 getRegion / regionchange） */
-  const [mapViewLatSpan, setMapViewLatSpan] = useState(0)
+  focusCoordRef.current = camera.focusCoord
 
   const refresh = (id: string) => {
     const p = getPlan(id)
@@ -168,11 +160,6 @@ export default function PlaceAddPage() {
       if (focusTimer.current) clearTimeout(focusTimer.current)
       if (leaveTimer.current) clearTimeout(leaveTimer.current)
       if (scrollTimer.current) clearTimeout(scrollTimer.current)
-      if (ignoreMapRegionTimer.current) clearTimeout(ignoreMapRegionTimer.current)
-      if (mapCenterAnimRaf.current != null) {
-        cancelAnimationFrame(mapCenterAnimRaf.current)
-        mapCenterAnimRaf.current = null
-      }
     }
   }, [])
 
@@ -204,11 +191,9 @@ export default function PlaceAddPage() {
         })),
         browseCover,
       )
-      setFocusCoord(fitted.center)
-      setMapScale(fitted.scale)
+      camera.applyFocusViewport(fitted.center, fitted.scale)
     } else if (userLocation) {
-      setFocusCoord(userLocation)
-      setMapScale(13)
+      camera.applyFocusViewport(userLocation, 13)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [places, userLocation])
@@ -294,285 +279,27 @@ export default function PlaceAddPage() {
     }
   }
 
-  const sheetPos = mapUiToSheetPos(mapUi, leavingSearch)
-
-  const sheetHeightNow =
-    dragHeightPx != null ? dragHeightPx : sheetHeightPx(sheetPos)
-  const sheetCoverRatio = coverRatioFromSheetHeight(sheetHeightNow)
-  sheetCoverRatioRef.current = sheetCoverRatio
-  mapScaleRef.current = mapScale
-  focusCoordRef.current = focusCoord
-  sheetDraggingRef.current = dragHeightPx != null
-
-  const effectiveLatSpan =
-    mapViewLatSpan > 0
-      ? mapViewLatSpan
-      : estimateMapLatSpan(mapScale, focusCoord.latitude)
-
-  const targetMapCenter = useMemo(
-    () => offsetCenterForSheet(focusCoord, sheetCoverRatio, effectiveLatSpan),
-    [focusCoord, sheetCoverRatio, effectiveLatSpan],
-  )
-
-  const [mapCenter, setMapCenter] = useState(targetMapCenter)
-
-  const clearIgnoreMapRegion = () => {
-    if (ignoreMapRegionTimer.current) {
-      clearTimeout(ignoreMapRegionTimer.current)
-      ignoreMapRegionTimer.current = null
-    }
-    ignoreMapRegionRef.current = false
-  }
-
-  const armIgnoreMapRegion = (ms: number) => {
-    ignoreMapRegionRef.current = true
-    if (ignoreMapRegionTimer.current) clearTimeout(ignoreMapRegionTimer.current)
-    ignoreMapRegionTimer.current = setTimeout(() => {
-      ignoreMapRegionRef.current = false
-      ignoreMapRegionTimer.current = null
-    }, ms)
-  }
-
-  const cancelMapCenterAnim = () => {
-    if (mapCenterAnimRaf.current != null) {
-      cancelAnimationFrame(mapCenterAnimRaf.current)
-      mapCenterAnimRaf.current = null
-    }
-  }
-
-  const applyMapCenter = (
-    next: { latitude: number; longitude: number },
-    opts?: { animate?: boolean },
-  ) => {
-    if (mapUserGesturingRef.current) return
-    mapCenterDisplayRef.current = next
-    setMapCenter(next)
-    armIgnoreMapRegion(opts?.animate ? MAP_CENTER_EASE_MS + 40 : 50)
-  }
-
-  useEffect(() => {
-    // 用户拖地图/缩放时，绝不改写中心
-    if (mapUserGesturingRef.current) return
-
-    const to = targetMapCenter
-    const from = mapCenterDisplayRef.current
-
-    if (suppressCenterFollowRef.current) {
-      suppressCenterFollowRef.current = false
-      mapCenterDisplayRef.current = to
-      return
-    }
-
-    cancelMapCenterAnim()
-
-    // 拖拽搜索栏时跟手更新
-    if (dragHeightPx != null) {
-      applyMapCenter(to)
-      return
-    }
-
-    if (nearlySameCoord(from, to)) {
-      mapCenterDisplayRef.current = to
-      return
-    }
-
-    const startedAt = Date.now()
-    const start = { ...from }
-    armIgnoreMapRegion(MAP_CENTER_EASE_MS + 40)
-
-    const tick = () => {
-      if (mapUserGesturingRef.current) {
-        mapCenterAnimRaf.current = null
-        clearIgnoreMapRegion()
-        return
-      }
-      const t = Math.min(1, (Date.now() - startedAt) / MAP_CENTER_EASE_MS)
-      const e = easeOutCubic(t)
-      const next = {
-        latitude: start.latitude + (to.latitude - start.latitude) * e,
-        longitude: start.longitude + (to.longitude - start.longitude) * e,
-      }
-      mapCenterDisplayRef.current = next
-      setMapCenter(next)
-      if (t < 1) {
-        mapCenterAnimRaf.current = requestAnimationFrame(tick)
-      } else {
-        mapCenterAnimRaf.current = null
-      }
-    }
-
-    mapCenterAnimRaf.current = requestAnimationFrame(tick)
-    return () => {
-      cancelMapCenterAnim()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetMapCenter, dragHeightPx])
-
-  const rememberLatSpan = (span: number | null | undefined) => {
-    if (span == null || !(span > 0)) return
-    if (Math.abs(mapViewLatSpanRef.current - span) < 1e-10) {
-      mapViewLatSpanRef.current = span
-      return
-    }
-    mapViewLatSpanRef.current = span
-    setMapViewLatSpan(span)
-  }
-
-  const isUserMapGesture = (causedBy?: string) =>
-    causedBy === 'gesture' ||
-    causedBy === 'drag' ||
-    causedBy === 'scale'
-
-  const onMapRegionChange = (e: {
-    type?: string
-    causedBy?: string
-    detail?: {
-      type?: string
-      causedBy?: string
-      scale?: number
-      centerLocation?: { latitude: number; longitude: number }
-      latitude?: number
-      longitude?: number
-      region?: {
-        northeast?: { latitude: number; longitude: number }
-        southwest?: { latitude: number; longitude: number }
-        southeast?: { latitude: number; longitude: number }
-      }
-    }
-  }) => {
-    const detail = e.detail || {}
-    const type = e.type || detail.type
-    const causedBy = e.causedBy || detail.causedBy
-
-    if (type === 'begin') {
-      if (isUserMapGesture(causedBy)) {
-        // 只打标 + 停动画；手势中禁止 setState，否则受控属性会把拖动拽回去
-        mapUserGesturingRef.current = true
-        cancelMapCenterAnim()
-        clearIgnoreMapRegion()
-      }
-      return
-    }
-
-    if (type !== 'end') return
-
-    const spanFromEvent = readLatSpanFromRegion(detail.region)
-
-    const center =
-      detail.centerLocation ||
-      (detail.latitude != null && detail.longitude != null
-        ? { latitude: detail.latitude, longitude: detail.longitude }
-        : null)
-
-    /** 仅缩放手势结束时回写受控 scale；拖动结束回写会触发地图再次应用缩放并略微缩小 */
-    const applyZoomScale = (raw?: number) => {
-      if (raw == null || !Number.isFinite(raw)) return false
-      const next = Math.min(20, Math.max(3, Math.round(raw)))
-      mapScaleRef.current = next
-      setMapScale((prev) => (prev === next ? prev : next))
-      return true
-    }
-
-    // 用户手势结束：解除冻结后一次性同步。程序改缩放也会带 causedBy=scale，不能走这里
-    if (
-      mapUserGesturingRef.current ||
-      (isUserMapGesture(causedBy) && !ownMapMoveRef.current)
-    ) {
-      const finishGesture = (scaleRaw?: number) => {
-        mapUserGesturingRef.current = false
-        if (center) {
-          const latSpan =
-            spanFromEvent ||
-            mapViewLatSpanRef.current ||
-            estimateMapLatSpan(
-              scaleRaw ?? mapScaleRef.current,
-              center.latitude,
-            )
-          const anchor = reverseOffsetCenterForSheet(
-            center,
-            sheetCoverRatioRef.current,
-            latSpan,
-          )
-          suppressCenterFollowRef.current = true
-          mapCenterDisplayRef.current = center
-          setMapCenter(center)
-          setFocusCoord(anchor)
-          if (spanFromEvent) setMapViewLatSpan(spanFromEvent)
-        } else if (spanFromEvent) {
-          setMapViewLatSpan(spanFromEvent)
-        }
-        if (causedBy === 'scale') applyZoomScale(scaleRaw)
-      }
-
-      if (causedBy === 'scale' && detail.scale == null) {
-        try {
-          Taro.createMapContext(PLAN_MAP_ID).getScale({
-            success: (res) => finishGesture(res.scale),
-            fail: () => finishGesture(),
-          })
-        } catch {
-          finishGesture()
-        }
-        return
-      }
-
-      finishGesture(causedBy === 'scale' ? detail.scale : undefined)
-      return
-    }
-
-    // 程序改中心/缩放：只刷新真实跨度，让中部底栏偏移重算，不把锚点锁回全屏中心
-    if (
-      ownMapMoveRef.current ||
-      causedBy === 'update' ||
-      causedBy === 'scale'
-    ) {
-      if (spanFromEvent) rememberLatSpan(spanFromEvent)
-      return
-    }
-    if (ignoreMapRegionRef.current) return
-    if (sheetDraggingRef.current) return
-    if (mapCenterAnimRaf.current != null) return
-    if (!center) return
-
-    if (spanFromEvent) rememberLatSpan(spanFromEvent)
-    const latSpan =
-      spanFromEvent ||
-      mapViewLatSpanRef.current ||
-      estimateMapLatSpan(detail.scale ?? mapScaleRef.current, center.latitude)
-    const anchor = reverseOffsetCenterForSheet(
-      center,
-      sheetCoverRatioRef.current,
-      latSpan,
-    )
-    suppressCenterFollowRef.current = true
-    mapCenterDisplayRef.current = center
-    setMapCenter(center)
-    setFocusCoord(anchor)
-    // 非用户手势路径不回写 scale，避免无谓触发地图缩放
-  }
-
   /** 选点前先读取当前地图真实跨度，再设置锚点 */
   const focusCoordOnMap = (
     coord: { latitude: number; longitude: number },
     after?: () => void,
   ) => {
     const apply = (span: number) => {
-      mapUserGesturingRef.current = false
-      rememberLatSpan(span)
-      setFocusCoord(coord)
+      camera.gesturingRef.current = false
+      camera.rememberLatSpan(span)
+      camera.setFocusCoord(coord)
       setMapUi('preview')
       after?.()
     }
 
     const fallback = () => {
       apply(
-        mapViewLatSpanRef.current ||
-          estimateMapLatSpan(mapScaleRef.current, coord.latitude),
+        estimateMapLatSpan(camera.mapScale, coord.latitude),
       )
     }
 
     try {
-      const ctx = Taro.createMapContext(PLAN_MAP_ID)
+      const ctx = Taro.createMapContext(PLACE_ADD_MAP_ID)
       ctx.getRegion({
         success: (res) => {
           const span = Math.abs(
@@ -890,7 +617,10 @@ export default function PlaceAddPage() {
             { latitude, longitude },
           )
         ) {
-          setFocusCoord({ latitude: next.latitude, longitude: next.longitude })
+          camera.setFocusCoord({
+            latitude: next.latitude,
+            longitude: next.longitude,
+          })
         }
       })
       .catch(() => {
@@ -900,11 +630,11 @@ export default function PlaceAddPage() {
 
   const refreshLatSpanFromMap = (seq: number) => {
     try {
-      Taro.createMapContext(PLAN_MAP_ID).getRegion({
+      Taro.createMapContext(PLACE_ADD_MAP_ID).getRegion({
         success: (res) => {
           if (seq !== selectSpanSeq.current) return
           const span = Math.abs(res.northeast.latitude - res.southwest.latitude)
-          if (span > 1e-8) rememberLatSpan(span)
+          if (span > 1e-8) camera.rememberLatSpan(span)
         },
       })
     } catch {
@@ -921,17 +651,15 @@ export default function PlaceAddPage() {
     setPreviewKind('search')
     setMapPickedPlace(source === 'map' ? next : null)
     if (source === 'map') revealSelectedPlace(next)
-    const nextScale = 15
     const seq = ++selectSpanSeq.current
-    ownMapMoveRef.current = true
-    setMapScale(nextScale)
-    mapScaleRef.current = nextScale
-    // 先用新缩放估算，让中部偏移马上生效；缩放落地后再用真实视野校正
-    rememberLatSpan(estimateMapLatSpan(nextScale, item.latitude))
-    setFocusCoord({ latitude: item.latitude, longitude: item.longitude })
+    camera.beginOwnMapMove()
+    camera.applyFocusViewport(
+      { latitude: item.latitude, longitude: item.longitude },
+      15,
+    )
     setTimeout(() => {
       refreshLatSpanFromMap(seq)
-      if (seq === selectSpanSeq.current) ownMapMoveRef.current = false
+      if (seq === selectSpanSeq.current) camera.endOwnMapMove()
     }, MAP_CENTER_EASE_MS + 80)
   }
 
@@ -1099,8 +827,8 @@ export default function PlaceAddPage() {
     }
   }
 
-  const onMapRegionChangeRef = useRef(onMapRegionChange)
-  onMapRegionChangeRef.current = onMapRegionChange
+  const onRegionChangeRef = useRef(camera.onRegionChange)
+  onRegionChangeRef.current = camera.onRegionChange
   const onMarkerTapRef = useRef(onMarkerTap)
   onMarkerTapRef.current = onMarkerTap
   const onMapPoiTapRef = useRef(onMapPoiTap)
@@ -1116,7 +844,7 @@ export default function PlaceAddPage() {
       causedBy?: string
       detail?: Record<string, unknown>
     }) => {
-      onMapRegionChangeRef.current(e as never)
+      onRegionChangeRef.current(e)
     },
     [],
   )
@@ -1167,8 +895,10 @@ export default function PlaceAddPage() {
   return (
     <View className='detail detail--map'>
       <MapStage
-        mapCenter={mapCenter}
-        mapScale={mapScale}
+        mapId={PLACE_ADD_MAP_ID}
+        gesturingRef={camera.gesturingRef}
+        mapCenter={camera.mapCenter}
+        mapScale={camera.mapScale}
         markers={markers as Array<Record<string, unknown>>}
         onRegionChange={stableOnRegionChange}
         onMarkerTap={stableOnMarkerTap}
@@ -1209,8 +939,8 @@ export default function PlaceAddPage() {
         focusPointOnMap={focusPointOnMap}
         onToggleCollectedListStar={onToggleCollectedListStar}
       />
-      <View className='map-fab map-fab--right map-fab--wide' onClick={goPlanTimeline}>
-        <Text className='map-fab__label'>设置行程</Text>
+      <View className='map-fab map-fab--right' onClick={goPlanTimeline}>
+        <ListTree size={16} color='#1a5f4a' />
       </View>
     </View>
   )

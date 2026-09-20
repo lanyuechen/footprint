@@ -1,6 +1,15 @@
-import { View, Text, ScrollView, Picker, RichText } from '@tarojs/components'
+import {
+  View,
+  Text,
+  ScrollView,
+  Picker,
+  RichText,
+  Input,
+  Textarea,
+} from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { Navigation } from 'lucide-react-taro/icons/navigation'
+import { SquarePen } from 'lucide-react-taro/icons/square-pen'
 import { Trash2 } from 'lucide-react-taro/icons/trash-2'
 import { useMemo, useState } from 'react'
 import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
@@ -11,13 +20,27 @@ import {
   toTimePart,
 } from '../../utils/datetime'
 import { GroupedSortList, type SortGroup } from './GroupedSortList'
-import { lightenColor, placeAxisMark } from './place-axis'
-import { placeInfoRows } from './place-info'
+import {
+  applyPlaceTypeOption,
+  lightenColor,
+  matchPlaceTypeOption,
+  placeAxisMark,
+  PLACE_TYPE_OPTIONS,
+  type PlaceTypeOption,
+} from './place-axis'
 import { buildTimelineYears } from './timeline-model'
 
 type TimelineStopView = TripStop & {
   place: CollectedPlace['place']
   collected: CollectedPlace
+}
+
+type PlaceInfoPatch = {
+  name?: string
+  type?: string
+  typecode?: string
+  noteText?: string
+  noteHtml?: string
 }
 
 type TimelineViewProps = {
@@ -26,10 +49,34 @@ type TimelineViewProps = {
   stops: TripStop[]
   onRemoveStop: (stopId: string) => void
   onReschedule: (stopId: string, expectedAt: string) => void
+  onUpdatePlace: (placeId: string, input: PlaceInfoPatch) => void
   onReorderGroups: (groups: SortGroup<TimelineStopView>[]) => void
   onAddStops: (datePart: string, placeIds: string[]) => void
   onAddDay: () => void
   onAddPlace: () => void
+}
+
+type EditDraft = {
+  stopId: string
+  placeId: string
+  name: string
+  typecode: string
+  typeLabel: string
+  time: string
+  datePart: string
+  noteText: string
+  initialNoteText: string
+  hadNoteHtml: boolean
+}
+
+function plainNoteFromPlace(collected: CollectedPlace): string {
+  if (collected.noteText?.trim()) return collected.noteText
+  if (!collected.noteHtml?.trim()) return ''
+  return collected.noteHtml
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 export function TimelineView({
@@ -38,6 +85,7 @@ export function TimelineView({
   stops,
   onRemoveStop,
   onReschedule,
+  onUpdatePlace,
   onReorderGroups,
   onAddStops,
   onAddDay,
@@ -46,6 +94,8 @@ export function TimelineView({
   const [addDayKey, setAddDayKey] = useState('')
   const [pickedIds, setPickedIds] = useState<string[]>([])
   const [expandedId, setExpandedId] = useState('')
+  const [typePickPlaceId, setTypePickPlaceId] = useState('')
+  const [editDraft, setEditDraft] = useState<EditDraft | null>(null)
 
   const years = useMemo(
     () => buildTimelineYears(plan, stops, places),
@@ -64,6 +114,23 @@ export function TimelineView({
       ),
     [years],
   )
+
+  /** 展开态 + 备注变更都要触发列表重新测高 */
+  const layoutKey = useMemo(
+    () =>
+      `${expandedId}|${places.map((p) => `${p.id}:${p.updatedAt}`).join(',')}`,
+    [expandedId, places],
+  )
+
+  const typePickPlace = typePickPlaceId
+    ? places.find((p) => p.id === typePickPlaceId)
+    : undefined
+  const typePickCurrent = editDraft
+    ? PLACE_TYPE_OPTIONS.find((o) => o.typecode === editDraft.typecode) ||
+      PLACE_TYPE_OPTIONS[0]
+    : typePickPlace
+      ? matchPlaceTypeOption(typePickPlace.place)
+      : null
 
   const openAdd = (datePart: string) => {
     setPickedIds([])
@@ -86,11 +153,81 @@ export function TimelineView({
     setPickedIds([])
   }
 
+  const openTypePick = (placeId: string) => {
+    setEditDraft(null)
+    setTypePickPlaceId(placeId)
+  }
+
+  const applyType = (option: PlaceTypeOption) => {
+    if (editDraft) {
+      setEditDraft({
+        ...editDraft,
+        typecode: option.typecode,
+        typeLabel: option.label,
+      })
+      setTypePickPlaceId('')
+      return
+    }
+    if (!typePickPlaceId || !typePickPlace) return
+    const next = applyPlaceTypeOption(typePickPlace.place, option)
+    onUpdatePlace(typePickPlaceId, {
+      type: next.type || '',
+      typecode: next.typecode || '',
+    })
+    setTypePickPlaceId('')
+  }
+
+  const openEdit = (point: TimelineStopView) => {
+    const opt = matchPlaceTypeOption(point.place)
+    const noteText = plainNoteFromPlace(point.collected)
+    setTypePickPlaceId('')
+    setEditDraft({
+      stopId: point.id,
+      placeId: point.collected.id,
+      name: point.place.name,
+      typecode: opt.typecode,
+      typeLabel: opt.label,
+      time: toTimePart(point.expectedAt),
+      datePart: toDatePart(point.expectedAt),
+      noteText,
+      initialNoteText: noteText,
+      hadNoteHtml: !!point.collected.noteHtml?.trim(),
+    })
+  }
+
+  const saveEdit = () => {
+    if (!editDraft) return
+    const name = editDraft.name.trim()
+    if (!name) {
+      Taro.showToast({ title: '标题不能为空', icon: 'none' })
+      return
+    }
+    const option =
+      PLACE_TYPE_OPTIONS.find((o) => o.typecode === editDraft.typecode) ||
+      PLACE_TYPE_OPTIONS[0]
+    const noteText = editDraft.noteText.trim()
+    const noteChanged = noteText !== editDraft.initialNoteText.trim()
+    const placePatch: PlaceInfoPatch = {
+      name,
+      type: option.type,
+      typecode: option.typecode,
+    }
+    if (noteChanged || !editDraft.hadNoteHtml) {
+      placePatch.noteText = noteText
+      placePatch.noteHtml = ''
+    }
+    onUpdatePlace(editDraft.placeId, placePatch)
+    const nextAt = combineDateTime(editDraft.datePart, editDraft.time)
+    onReschedule(editDraft.stopId, nextAt)
+    setEditDraft(null)
+    Taro.showToast({ title: '已保存', icon: 'success' })
+  }
+
   return (
     <View className='timeline-view'>
       <GroupedSortList
         groups={groups}
-        layoutKey={expandedId}
+        layoutKey={layoutKey}
         onItemClick={(id) => {
           setExpandedId((cur) => (cur === id ? '' : id))
         }}
@@ -166,6 +303,11 @@ export function TimelineView({
                 <View
                   className='gsl-rail__dot gsl-rail__dot--point'
                   style={{ backgroundColor: lightenColor(axisMark.color) }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (dragging) return
+                    openTypePick(point.collected.id)
+                  }}
                 >
                   <AxisIcon size={14} color={axisMark.color} />
                 </View>
@@ -225,7 +367,40 @@ export function TimelineView({
                 </View>
                 <View className='gsl-card__detail'>
                   <View className='gsl-card__detail-inner'>
+                    <View
+                      className='gsl-card__detail-note'
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        Taro.navigateTo({
+                          url: `/pages/point-note/index?placeId=${point.collected.id}`,
+                        })
+                      }}
+                    >
+                      {point.collected.noteHtml?.trim() ? (
+                        <RichText
+                          className='gsl-card__detail-html'
+                          nodes={point.collected.noteHtml}
+                        />
+                      ) : point.collected.noteText?.trim() ? (
+                        <View className='gsl-card__detail-text'>
+                          {point.collected.noteText}
+                        </View>
+                      ) : (
+                        <View className='gsl-card__detail-empty'>暂无备注</View>
+                      )}
+                    </View>
+                    <View className='gsl-card__detail-divider' />
                     <View className='gsl-card__detail-actions'>
+                      <View
+                        className='gsl-card__detail-edit'
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openEdit(point)
+                        }}
+                      >
+                        <SquarePen size={14} color='#1a5f4a' />
+                        <Text className='gsl-card__detail-edit-text'>编辑</Text>
+                      </View>
                       <View
                         className='gsl-card__detail-delete'
                         onClick={(e) => {
@@ -237,25 +412,6 @@ export function TimelineView({
                         <Text className='gsl-card__detail-delete-text'>删除</Text>
                       </View>
                     </View>
-                    {placeInfoRows(point.place).map((row) => (
-                      <View key={row.label} className='gsl-card__info-row'>
-                        <View className='gsl-card__info-label'>{row.label}</View>
-                        <View className='gsl-card__info-value'>{row.value}</View>
-                      </View>
-                    ))}
-                    <View className='gsl-card__detail-divider' />
-                    {point.collected.noteHtml?.trim() ? (
-                      <RichText
-                        className='gsl-card__detail-html'
-                        nodes={point.collected.noteHtml}
-                      />
-                    ) : point.collected.noteText?.trim() ? (
-                      <View className='gsl-card__detail-text'>
-                        {point.collected.noteText}
-                      </View>
-                    ) : (
-                      <View className='gsl-card__detail-empty'>暂无备注</View>
-                    )}
                   </View>
                 </View>
               </View>
@@ -321,6 +477,141 @@ export function TimelineView({
                 onClick={confirmAdd}
               >
                 添加{pickedIds.length > 0 ? `（${pickedIds.length}）` : ''}
+              </View>
+            </View>
+          </View>
+        </View>
+      ) : null}
+
+      {typePickPlaceId ? (
+        <View className='place-picker'>
+          <View
+            className='place-picker__mask'
+            onClick={() => setTypePickPlaceId('')}
+          />
+          <View className='place-picker__sheet'>
+            <View className='place-picker__head'>
+              <Text className='place-picker__title'>选择类型</Text>
+              <Text
+                className='place-picker__add-place'
+                onClick={() => setTypePickPlaceId('')}
+              >
+                关闭
+              </Text>
+            </View>
+            <View className='place-picker__sub'>
+              {editDraft?.name || typePickPlace?.place.name || '修改时间轴图标'}
+            </View>
+            <ScrollView scrollY className='place-picker__list'>
+              <View className='type-grid'>
+                {PLACE_TYPE_OPTIONS.map((opt) => {
+                  const Icon = opt.mark.icon
+                  const on =
+                    typePickCurrent?.mark.marker === opt.mark.marker &&
+                    typePickCurrent?.typecode === opt.typecode
+                  return (
+                    <View
+                      key={`${opt.typecode}-${opt.mark.marker}`}
+                      className={`type-grid__item${on ? ' type-grid__item--on' : ''}`}
+                      onClick={() => applyType(opt)}
+                    >
+                      <View
+                        className='type-grid__icon'
+                        style={{ backgroundColor: lightenColor(opt.mark.color) }}
+                      >
+                        <Icon size={18} color={opt.mark.color} />
+                      </View>
+                      <Text className='type-grid__label'>{opt.label}</Text>
+                    </View>
+                  )
+                })}
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      ) : editDraft ? (
+        <View className='place-picker'>
+          <View className='place-picker__mask' onClick={() => setEditDraft(null)} />
+          <View className='place-picker__sheet place-picker__sheet--edit'>
+            <View className='place-picker__head'>
+              <Text className='place-picker__title'>编辑卡片</Text>
+              <Text
+                className='place-picker__add-place'
+                onClick={() => setEditDraft(null)}
+              >
+                关闭
+              </Text>
+            </View>
+            <ScrollView scrollY className='place-picker__list place-picker__list--edit'>
+              <View className='card-edit'>
+                <View className='card-edit__field'>
+                  <Text className='card-edit__label'>标题</Text>
+                  <Input
+                    className='card-edit__input'
+                    value={editDraft.name}
+                    maxlength={60}
+                    placeholder='地点名称'
+                    onInput={(e) =>
+                      setEditDraft({ ...editDraft, name: e.detail.value })
+                    }
+                  />
+                </View>
+                <View className='card-edit__field'>
+                  <Text className='card-edit__label'>类型</Text>
+                  <View
+                    className='card-edit__picker'
+                    onClick={() => setTypePickPlaceId(editDraft.placeId)}
+                  >
+                    <Text className='card-edit__picker-text'>
+                      {editDraft.typeLabel}
+                    </Text>
+                    <Text className='card-edit__picker-hint'>点击选择</Text>
+                  </View>
+                </View>
+                <View className='card-edit__field'>
+                  <Text className='card-edit__label'>时间</Text>
+                  <Picker
+                    mode='time'
+                    value={editDraft.time}
+                    onChange={(e) =>
+                      setEditDraft({ ...editDraft, time: e.detail.value })
+                    }
+                  >
+                    <View className='card-edit__picker'>
+                      <Text className='card-edit__picker-text'>
+                        {editDraft.time}
+                      </Text>
+                      <Text className='card-edit__picker-hint'>点击修改</Text>
+                    </View>
+                  </Picker>
+                </View>
+                <View className='card-edit__field'>
+                  <Text className='card-edit__label'>备注</Text>
+                  <Textarea
+                    className='card-edit__textarea'
+                    value={editDraft.noteText}
+                    maxlength={500}
+                    placeholder='可选备注'
+                    autoHeight
+                    onInput={(e) =>
+                      setEditDraft({ ...editDraft, noteText: e.detail.value })
+                    }
+                  />
+                </View>
+              </View>
+            </ScrollView>
+            <View className='place-picker__actions'>
+              <View
+                className='place-picker__btn'
+                onClick={() => setEditDraft(null)}
+              >
+                取消
+              </View>
+              <View
+                className='place-picker__btn place-picker__btn--primary'
+                onClick={saveEdit}
+              >
+                保存
               </View>
             </View>
           </View>

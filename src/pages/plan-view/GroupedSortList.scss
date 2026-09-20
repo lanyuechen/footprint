@@ -337,7 +337,21 @@
     display: flex;
     justify-content: flex-end;
     align-items: center;
-    margin-bottom: 12px;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  &__detail-edit {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+  }
+
+  &__detail-edit-text {
+    font-size: 26px;
+    color: #1a5f4a;
+    line-height: 1.2;
   }
 
   &__detail-delete {
