@@ -3,7 +3,6 @@ import {
   Text,
   ScrollView,
   Picker,
-  RichText,
   Input,
   Textarea,
 } from '@tarojs/components'
@@ -13,12 +12,6 @@ import { SquarePen } from 'lucide-react-taro/icons/square-pen'
 import { Trash2 } from 'lucide-react-taro/icons/trash-2'
 import { useMemo, useState } from 'react'
 import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
-import {
-  combineDateTime,
-  formatClock,
-  toDatePart,
-  toTimePart,
-} from '../../utils/datetime'
 import { GroupedSortList, type SortGroup } from './GroupedSortList'
 import {
   applyPlaceTypeOption,
@@ -39,8 +32,6 @@ type PlaceInfoPatch = {
   name?: string
   type?: string
   typecode?: string
-  noteText?: string
-  noteHtml?: string
 }
 
 type TimelineViewProps = {
@@ -48,7 +39,10 @@ type TimelineViewProps = {
   places: CollectedPlace[]
   stops: TripStop[]
   onRemoveStop: (stopId: string) => void
-  onReschedule: (stopId: string, expectedAt: string) => void
+  onReschedule: (
+    stopId: string,
+    input: { dayIndex?: number; time?: string | null; note?: string | null },
+  ) => void
   onUpdatePlace: (placeId: string, input: PlaceInfoPatch) => void
   onReorderGroups: (groups: SortGroup<TimelineStopView>[]) => void
   onAddDay: () => void
@@ -60,21 +54,10 @@ type EditDraft = {
   name: string
   typecode: string
   typeLabel: string
+  /** HH:mm，空表示未设置 */
   time: string
-  datePart: string
-  noteText: string
-  initialNoteText: string
-  hadNoteHtml: boolean
-}
-
-function plainNoteFromPlace(collected: CollectedPlace): string {
-  if (collected.noteText?.trim()) return collected.noteText
-  if (!collected.noteHtml?.trim()) return ''
-  return collected.noteHtml
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  dayIndex: number
+  note: string
 }
 
 export function TimelineView({
@@ -100,7 +83,7 @@ export function TimelineView({
     () =>
       years.flatMap((year) =>
         year.days.map((day) => ({
-          id: day.datePart,
+          id: String(day.dayIndex),
           title: day.label,
           subtitle: day.weekday,
           items: day.stops,
@@ -112,8 +95,8 @@ export function TimelineView({
   /** 展开态 + 备注变更都要触发列表重新测高 */
   const layoutKey = useMemo(
     () =>
-      `${expandedId}|${places.map((p) => `${p.id}:${p.updatedAt}`).join(',')}`,
-    [expandedId, places],
+      `${expandedId}|${stops.map((s) => `${s.id}:${s.note || ''}`).join(',')}`,
+    [expandedId, stops],
   )
 
   const typePickPlace = typePickPlaceId
@@ -126,9 +109,9 @@ export function TimelineView({
       ? matchPlaceTypeOption(typePickPlace.place)
       : null
 
-  const openAdd = (datePart: string) => {
+  const openAdd = (dayIndex: number) => {
     Taro.navigateTo({
-      url: `/pages/place-add/index?id=${plan.id}&day=${datePart}`,
+      url: `/pages/place-add/index?id=${plan.id}&day=${dayIndex}`,
     })
   }
 
@@ -158,7 +141,7 @@ export function TimelineView({
 
   const openEdit = (point: TimelineStopView) => {
     const opt = matchPlaceTypeOption(point.place)
-    const noteText = plainNoteFromPlace(point.collected)
+    const note = point.note || ''
     setTypePickPlaceId('')
     setEditDraft({
       stopId: point.id,
@@ -166,11 +149,9 @@ export function TimelineView({
       name: point.place.name,
       typecode: opt.typecode,
       typeLabel: opt.label,
-      time: toTimePart(point.expectedAt),
-      datePart: toDatePart(point.expectedAt),
-      noteText,
-      initialNoteText: noteText,
-      hadNoteHtml: !!point.collected.noteHtml?.trim(),
+      time: point.time || '',
+      dayIndex: point.dayIndex,
+      note,
     })
   }
 
@@ -184,23 +165,28 @@ export function TimelineView({
     const option =
       PLACE_TYPE_OPTIONS.find((o) => o.typecode === editDraft.typecode) ||
       PLACE_TYPE_OPTIONS[0]
-    const noteText = editDraft.noteText.trim()
-    const noteChanged = noteText !== editDraft.initialNoteText.trim()
-    const placePatch: PlaceInfoPatch = {
+    onUpdatePlace(editDraft.placeId, {
       name,
       type: option.type,
       typecode: option.typecode,
-    }
-    if (noteChanged || !editDraft.hadNoteHtml) {
-      placePatch.noteText = noteText
-      placePatch.noteHtml = ''
-    }
-    onUpdatePlace(editDraft.placeId, placePatch)
-    const nextAt = combineDateTime(editDraft.datePart, editDraft.time)
-    onReschedule(editDraft.stopId, nextAt)
+    })
+    onReschedule(editDraft.stopId, {
+      dayIndex: editDraft.dayIndex,
+      time: editDraft.time.trim() || null,
+      note: editDraft.note.trim() || null,
+    })
     setEditDraft(null)
     Taro.showToast({ title: '已保存', icon: 'success' })
   }
+
+  const dayPickerRange = useMemo(() => {
+    const count = Math.max(1, plan.dayCount || 1)
+    return Array.from({ length: count }, (_, i) => {
+      const [sy, sm, sd] = plan.startDate.split('-').map(Number)
+      const dt = new Date(sy, sm - 1, sd + i)
+      return `${dt.getMonth() + 1}月${dt.getDate()}日`
+    })
+  }, [plan.startDate, plan.dayCount])
 
   return (
     <View className='timeline-view'>
@@ -263,7 +249,7 @@ export function TimelineView({
                   className='grouped-sort__header-add'
                   onClick={(e) => {
                     e.stopPropagation()
-                    openAdd(group.id)
+                    openAdd(Number(group.id))
                   }}
                 >
                   + 添加
@@ -276,6 +262,7 @@ export function TimelineView({
           const axisMark = placeAxisMark(point.place)
           const AxisIcon = axisMark.icon
           const open = expandedId === point.id && !dragging
+          const timeLabel = point.time?.trim() || ''
           return (
             <View className='gsl-row'>
               <View className='gsl-rail'>
@@ -298,29 +285,28 @@ export function TimelineView({
               >
                 <View className='gsl-card__row'>
                   <View className='gsl-card__main'>
-                    <View className='gsl-card__time-wrap'>
-                      <Picker
-                        mode='time'
-                        value={toTimePart(point.expectedAt)}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => {
-                          const next = combineDateTime(
-                            toDatePart(point.expectedAt),
-                            e.detail.value,
-                          )
-                          if (next !== point.expectedAt) {
-                            onReschedule(point.id, next)
-                          }
-                        }}
-                      >
-                        <View
-                          className='gsl-card__time'
+                    {!!timeLabel && (
+                      <View className='gsl-card__time-wrap'>
+                        <Picker
+                          mode='time'
+                          value={timeLabel}
                           onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => {
+                            const next = e.detail.value
+                            if (next !== point.time) {
+                              onReschedule(point.id, { time: next })
+                            }
+                          }}
                         >
-                          {formatClock(point.expectedAt)}
-                        </View>
-                      </Picker>
-                    </View>
+                          <View
+                            className='gsl-card__time gsl-card__time--set'
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {timeLabel}
+                          </View>
+                        </Picker>
+                      </View>
+                    )}
                     <View className='gsl-card__name'>{point.place.name}</View>
                     {!!point.place.address && (
                       <View className='gsl-card__addr'>{point.place.address}</View>
@@ -351,18 +337,13 @@ export function TimelineView({
                       onClick={(e) => {
                         e.stopPropagation()
                         Taro.navigateTo({
-                          url: `/pages/point-note/index?placeId=${point.collected.id}`,
+                          url: `/pages/point-note/index?stopId=${point.id}`,
                         })
                       }}
                     >
-                      {point.collected.noteHtml?.trim() ? (
-                        <RichText
-                          className='gsl-card__detail-html'
-                          nodes={point.collected.noteHtml}
-                        />
-                      ) : point.collected.noteText?.trim() ? (
+                      {point.note?.trim() ? (
                         <View className='gsl-card__detail-text'>
-                          {point.collected.noteText}
+                          {point.note}
                         </View>
                       ) : (
                         <View className='gsl-card__detail-empty'>暂无备注</View>
@@ -485,32 +466,65 @@ export function TimelineView({
                   </View>
                 </View>
                 <View className='card-edit__field'>
-                  <Text className='card-edit__label'>时间</Text>
+                  <Text className='card-edit__label'>日期</Text>
                   <Picker
-                    mode='time'
-                    value={editDraft.time}
+                    mode='selector'
+                    range={dayPickerRange}
+                    value={Math.min(
+                      editDraft.dayIndex,
+                      Math.max(0, dayPickerRange.length - 1),
+                    )}
                     onChange={(e) =>
-                      setEditDraft({ ...editDraft, time: e.detail.value })
+                      setEditDraft({
+                        ...editDraft,
+                        dayIndex: Number(e.detail.value) || 0,
+                      })
                     }
                   >
                     <View className='card-edit__picker'>
                       <Text className='card-edit__picker-text'>
-                        {editDraft.time}
+                        {dayPickerRange[editDraft.dayIndex] ||
+                          `第 ${editDraft.dayIndex + 1} 天`}
                       </Text>
                       <Text className='card-edit__picker-hint'>点击修改</Text>
                     </View>
                   </Picker>
                 </View>
                 <View className='card-edit__field'>
+                  <Text className='card-edit__label'>时间</Text>
+                  <Picker
+                    mode='time'
+                    value={editDraft.time || '09:00'}
+                    onChange={(e) =>
+                      setEditDraft({ ...editDraft, time: e.detail.value })
+                    }
+                  >
+                    <View className='card-edit__picker'>
+                      <Text className='card-edit__picker-text'>
+                        {editDraft.time || '未设置'}
+                      </Text>
+                      <Text className='card-edit__picker-hint'>点击设置</Text>
+                    </View>
+                  </Picker>
+                  {!!editDraft.time && (
+                    <Text
+                      className='card-edit__clear'
+                      onClick={() => setEditDraft({ ...editDraft, time: '' })}
+                    >
+                      清除时间
+                    </Text>
+                  )}
+                </View>
+                <View className='card-edit__field'>
                   <Text className='card-edit__label'>备注</Text>
                   <Textarea
                     className='card-edit__textarea'
-                    value={editDraft.noteText}
+                    value={editDraft.note}
                     maxlength={500}
                     placeholder='可选备注'
                     autoHeight
                     onInput={(e) =>
-                      setEditDraft({ ...editDraft, noteText: e.detail.value })
+                      setEditDraft({ ...editDraft, note: e.detail.value })
                     }
                   />
                 </View>

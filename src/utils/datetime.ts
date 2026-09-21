@@ -102,6 +102,60 @@ export function combineDateTime(datePart: string, timePart: string): string {
   return new Date(y, m - 1, d, hh, mm, 0, 0).toISOString()
 }
 
+function parseDatePartLocal(datePart: string): Date | null {
+  const [y, m, d] = datePart.split('-').map(Number)
+  if (!y || !m || !d) return null
+  const day = new Date(y, m - 1, d)
+  if (Number.isNaN(day.getTime())) return null
+  return day
+}
+
+/** 计划 startDate + dayIndex → YYYY-MM-DD */
+export function datePartOfDay(startDate: string, dayIndex: number): string {
+  const day = parseDatePartLocal(startDate)
+  if (!day) return startDate
+  day.setDate(day.getDate() + Math.max(0, Math.floor(dayIndex)))
+  return toDatePart(day.toISOString())
+}
+
+/** YYYY-MM-DD 相对 startDate 的天数偏移（≥0）；无法解析时返回 0 */
+export function dayIndexOfDate(startDate: string, datePart: string): number {
+  const start = parseDatePartLocal(startDate)
+  const day = parseDatePartLocal(datePart)
+  if (!start || !day) return 0
+  const offset = Math.round((day.getTime() - start.getTime()) / 86400000)
+  return offset < 0 ? 0 : offset
+}
+
+/** 归一备注：优先纯文本，否则从 HTML 抽文本 */
+export function normalizeNoteText(
+  note?: unknown,
+  noteText?: unknown,
+  noteHtml?: unknown,
+): string | undefined {
+  if (typeof note === 'string' && note.trim()) return note.trim()
+  if (typeof noteText === 'string' && noteText.trim()) return noteText.trim()
+  if (typeof noteHtml === 'string' && noteHtml.trim()) {
+    const plain = noteHtml
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    return plain || undefined
+  }
+  return undefined
+}
+
+/** 校验 HH:mm；非法则返回 undefined */
+export function normalizeTimePart(time?: unknown): string | undefined {
+  if (typeof time !== 'string') return undefined
+  const t = time.trim()
+  if (!/^\d{1,2}:\d{2}$/.test(t)) return undefined
+  const [hh, mm] = t.split(':').map(Number)
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return undefined
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
+}
+
 /** 距离展示：米 / 公里 */
 export function formatDistance(meters?: number): string {
   if (meters == null || !Number.isFinite(meters) || meters < 0) return ''

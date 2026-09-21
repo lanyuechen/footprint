@@ -59,8 +59,8 @@ function placeMarkerIcon(place: PlaceInfo, selected: boolean) {
 
 export default function PlaceAddPage() {
   const [planId, setPlanId] = useState('')
-  /** 时间轴传入的日期 YYYY-MM-DD */
-  const [tripDay, setTripDay] = useState('')
+  /** 时间轴传入的 dayIndex（从 0 起） */
+  const [tripDayIndex, setTripDayIndex] = useState<number | null>(null)
   const [plan, setPlan] = useState<TravelPlan | null>(null)
   const [places, setPlaces] = useState<CollectedPlace[]>([])
   const [mapUi, setMapUi] = useState<MapUiMode>('browsing')
@@ -151,14 +151,15 @@ export default function PlaceAddPage() {
 
   useLoad((options) => {
     const id = options?.id || ''
-    const day = typeof options?.day === 'string' ? options.day : ''
+    const dayRaw = typeof options?.day === 'string' ? options.day : ''
+    const dayIndex = Number.parseInt(dayRaw, 10)
     setPlanId(id)
-    setTripDay(day)
-    if (!id || !day) {
+    if (!id || !Number.isFinite(dayIndex) || dayIndex < 0) {
       Taro.showToast({ title: '参数缺失', icon: 'none' })
       setTimeout(() => Taro.navigateBack(), 500)
       return
     }
+    setTripDayIndex(dayIndex)
     refresh(id)
   })
 
@@ -340,7 +341,7 @@ export default function PlaceAddPage() {
   })()
 
   const confirmTripAdd = () => {
-    if (!planId || !tripDay) return
+    if (!planId || tripDayIndex == null) return
     if (tripPickCount === 0) {
       Taro.showToast({ title: '请选择地点', icon: 'none' })
       return
@@ -358,7 +359,7 @@ export default function PlaceAddPage() {
       }
       const created = addStopsToDay({
         planId,
-        datePart: tripDay,
+        dayIndex: tripDayIndex,
         placeIds,
       })
       setLastPlanView('timeline')

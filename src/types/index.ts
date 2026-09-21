@@ -47,8 +47,6 @@ export interface CollectedPlace {
   place: PlaceInfo
   createdAt: string
   updatedAt: string
-  noteHtml?: string
-  noteText?: string
   extra?: Record<string, unknown>
 }
 
@@ -60,12 +58,12 @@ export interface TripStop {
   id: string
   planId: string
   placeId: string
-  /** 该次行程预期时间，ISO，精确到分钟 */
-  expectedAt: string
-  createdAt: string
-  updatedAt: string
-  noteHtml?: string
-  noteText?: string
+  /** 相对计划 startDate 的第几天，从 0 起；分组依据 */
+  dayIndex: number
+  /** 可选到访时刻 HH:mm；默认空，设置后才展示 */
+  time?: string
+  /** 该次行程的纯文本备注 */
+  note?: string
   extra?: Record<string, unknown>
 }
 

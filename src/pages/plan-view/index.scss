@@ -210,6 +210,10 @@
     font-size: 24px;
     color: #1a5f4a;
     font-weight: 600;
+
+    &--set {
+      color: #c45656;
+    }
   }
 
   &__index {
@@ -1115,5 +1119,12 @@
     font-size: 28px;
     color: #1f2329;
     line-height: 1.5;
+  }
+
+  &__clear {
+    align-self: flex-start;
+    font-size: 24px;
+    color: #c45656;
+    padding: 4px 0;
   }
 }

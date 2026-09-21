@@ -1,8 +1,9 @@
 import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
-import { toDatePart } from '../../utils/datetime'
+import { datePartOfDay } from '../../utils/datetime'
 
 export type TimelineDay = {
   key: string
+  dayIndex: number
   datePart: string
   label: string
   weekday: string
@@ -25,16 +26,9 @@ function parseDatePart(datePart: string): Date | null {
   return day
 }
 
-function addDays(datePart: string, offset: number): string {
-  const day = parseDatePart(datePart)
-  if (!day) return datePart
-  day.setDate(day.getDate() + offset)
-  return toDatePart(day.toISOString())
-}
-
 /**
- * 以计划 startDate 为基准展开 dayCount 天，把行程引用挂到对应日期。
- * 日内顺序沿用传入 stops 的顺序（由 plan.stopIds / 添加与拖拽决定），不按时间排序。
+ * 以计划 startDate 为基准展开 dayCount 天，按 stop.dayIndex 挂到对应日。
+ * 日内顺序沿用传入 stops 的顺序（由 plan.stopIds / 添加与拖拽决定），不按时刻排序。
  * 收藏地点通过 placeId 解析；解析失败的 stop 跳过。
  */
 export function buildTimelineYears(
@@ -49,7 +43,7 @@ export function buildTimelineYears(
   if (!start) return years
 
   for (let i = 0; i < dayCount; i += 1) {
-    const datePart = addDays(plan.startDate, i)
+    const datePart = datePartOfDay(plan.startDate, i)
     const day = parseDatePart(datePart)
     if (!day) continue
     const yKey = String(day.getFullYear())
@@ -59,7 +53,7 @@ export function buildTimelineYears(
       years.push(year)
     }
     const dayStops = stops
-      .filter((s) => toDatePart(s.expectedAt) === datePart)
+      .filter((s) => s.dayIndex === i)
       .flatMap((stop) => {
         const collected = placeMap.get(stop.placeId)
         if (!collected) return []
@@ -67,6 +61,7 @@ export function buildTimelineYears(
       })
     year.days.push({
       key: `${day.getFullYear()}-${day.getMonth() + 1}-${day.getDate()}`,
+      dayIndex: i,
       datePart,
       label: `${day.getMonth() + 1}月${day.getDate()}日`,
       weekday: WEEKDAYS[day.getDay()],

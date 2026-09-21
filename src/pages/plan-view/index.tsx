@@ -13,7 +13,7 @@ import {
   setLastPlanView,
   setPlanDayCount,
   updatePlaceInfo,
-  updateStopExpectedAt,
+  updateStopSchedule,
 } from '../../services/storage'
 import { TimelineView } from './TimelineView'
 import { TripMapView } from './TripMapView'
@@ -151,7 +151,7 @@ export default function PlanViewPage() {
                 reorderPlanStops(
                   planId,
                   groups.map((g) => ({
-                    datePart: g.id,
+                    dayIndex: Number(g.id),
                     stopIds: g.items.map((it) => it.id),
                   })),
                 ),
@@ -175,8 +175,8 @@ export default function PlanViewPage() {
             refreshPlanMeta(planId)
             Taro.showToast({ title: '已移除', icon: 'success' })
           }}
-          onReschedule={(stopId, expectedAt) => {
-            const updated = updateStopExpectedAt(stopId, expectedAt)
+          onReschedule={(stopId, input) => {
+            const updated = updateStopSchedule(stopId, input)
             if (!updated || !planId) {
               Taro.showToast({ title: '时间未保存', icon: 'none' })
               return
@@ -200,7 +200,7 @@ export default function PlanViewPage() {
                 reorderPlanStops(
                   planId,
                   groups.map((g) => ({
-                    datePart: g.id,
+                    dayIndex: Number(g.id),
                     stopIds: g.items.map((it) => it.id),
                   })),
                 ),

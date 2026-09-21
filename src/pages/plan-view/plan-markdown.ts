@@ -1,6 +1,5 @@
 import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
 import { buildTimelineYears } from './timeline-model'
-import { formatClock } from '../../utils/datetime'
 
 /** 将计划行程导出为可分享的 Markdown */
 export function planToMarkdown(
@@ -42,21 +41,13 @@ export function planToMarkdown(
         continue
       }
       day.stops.forEach((stop, index) => {
-        const time = formatClock(stop.expectedAt)
+        const time = stop.time?.trim() || ''
         const title = stop.place.name || '未命名地点'
         lines.push(`${index + 1}. **${title}**${time ? ` · ${time}` : ''}`)
         if (stop.place.address?.trim()) {
           lines.push(`   - 地址：${stop.place.address.trim()}`)
         }
-        const note =
-          stop.collected.noteText?.trim() ||
-          (stop.collected.noteHtml
-            ? stop.collected.noteHtml
-                .replace(/<[^>]+>/g, ' ')
-                .replace(/&nbsp;/gi, ' ')
-                .replace(/\s+/g, ' ')
-                .trim()
-            : '')
+        const note = stop.note?.trim() || ''
         if (note) {
           lines.push(`   - 备注：${note}`)
         }

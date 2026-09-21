@@ -9,7 +9,6 @@ import {
   type SheetPos,
 } from '../../components/sheet-map'
 import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
-import { formatClock } from '../../utils/datetime'
 import { GroupedSortList, type SortGroup } from './GroupedSortList'
 import { markerIconPath, placeAxisMark, lightenColor } from './place-axis'
 import { buildTimelineYears, type TimelineDay } from './timeline-model'
@@ -71,7 +70,9 @@ export function TripMapView({
     return years.flatMap((y) => y.days)
   }, [plan, stops, places])
 
-  const [dayKey, setDayKey] = useState(() => days[0]?.datePart || '')
+  const [dayKey, setDayKey] = useState(() =>
+    days[0] != null ? String(days[0].dayIndex) : '',
+  )
   const [sheetPos, setSheetPos] = useState<SheetPos>('bottom')
   const [selectedStopId, setSelectedStopId] = useState('')
   const [listScrollId, setListScrollId] = useState('')
@@ -82,7 +83,7 @@ export function TripMapView({
   const daysScrollSeq = useRef(0)
 
   const selectedDay: TimelineDay | null =
-    days.find((d) => d.datePart === dayKey) || days[0] || null
+    days.find((d) => String(d.dayIndex) === dayKey) || days[0] || null
 
   const dayStops = selectedDay?.stops || []
   const mapStops = useMemo(() => uniqueStopsByPlace(dayStops), [dayStops])
@@ -99,7 +100,7 @@ export function TripMapView({
     if (!selectedDay) return []
     return [
       {
-        id: selectedDay.datePart,
+        id: String(selectedDay.dayIndex),
         title: selectedDay.label,
         subtitle: selectedDay.weekday,
         items: dayStops,
@@ -135,8 +136,8 @@ export function TripMapView({
       setDayKey('')
       return
     }
-    if (!days.some((d) => d.datePart === dayKey)) {
-      setDayKey(days[0].datePart)
+    if (!days.some((d) => String(d.dayIndex) === dayKey)) {
+      setDayKey(String(days[0].dayIndex))
     }
   }, [days, dayKey])
 
@@ -294,10 +295,10 @@ export function TripMapView({
     const reordered = next[0]
     if (!reordered) return
     const groups = days.map((d) =>
-      d.datePart === reordered.id
+      String(d.dayIndex) === reordered.id
         ? reordered
         : {
-            id: d.datePart,
+            id: String(d.dayIndex),
             title: d.label,
             subtitle: d.weekday,
             items: d.stops,
@@ -354,17 +355,18 @@ export function TripMapView({
             >
               <View className='trip-days__row'>
                 {days.map((day) => {
-                  const active = day.datePart === (selectedDay?.datePart || '')
+                  const key = String(day.dayIndex)
+                  const active = key === (selectedDay != null ? String(selectedDay.dayIndex) : '')
                   return (
                     <View
-                      id={`trip-day-${day.datePart}`}
-                      key={day.datePart}
+                      id={`trip-day-${key}`}
+                      key={key}
                       className={`trip-days__item${
                         active ? ' trip-days__item--on' : ''
                       }`}
                       onClick={(e) => {
                         e.stopPropagation()
-                        setDayKey(day.datePart)
+                        setDayKey(key)
                       }}
                     >
                       <Text className='trip-days__label'>{day.label}</Text>
@@ -404,7 +406,6 @@ export function TripMapView({
                   const active = stop.id === selectedStopId && !dragging
                   const axis = placeAxisMark(stop.place)
                   const AxisIcon = axis.icon
-                  const index = dayStops.findIndex((s) => s.id === stop.id)
                   return (
                     <View
                       id={`trip-stop-${stop.id}`}
@@ -419,14 +420,11 @@ export function TripMapView({
                         <AxisIcon size={14} color={axis.color} />
                       </View>
                       <View className='trip-sheet__body'>
-                        <View className='trip-sheet__row'>
-                          <Text className='trip-sheet__time'>
-                            {formatClock(stop.expectedAt)}
+                        {!!stop.time && (
+                          <Text className='trip-sheet__time trip-sheet__time--set'>
+                            {stop.time}
                           </Text>
-                          <Text className='trip-sheet__index'>
-                            第 {index >= 0 ? index + 1 : 1} 站
-                          </Text>
-                        </View>
+                        )}
                         <Text className='trip-sheet__name'>
                           {stop.place.name}
                         </Text>

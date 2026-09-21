@@ -7,7 +7,7 @@ import type {
   TravelPlan,
   TripStop,
 } from '../types'
-import { combineDateTime, toDatePart, toTimePart } from '../utils/datetime'
+import { datePartOfDay, dayIndexOfDate, normalizeNoteText, normalizeTimePart, toDatePart, toTimePart } from '../utils/datetime'
 
 function createEmptyStore(): AppDataStore {
   return {
@@ -87,20 +87,21 @@ function migrateV1(raw: Record<string, unknown>): AppDataStore {
         place: pt.place as PlaceInfo,
         createdAt: ts,
         updatedAt: String(pt.updatedAt || ts),
-        noteHtml: typeof pt.noteHtml === 'string' ? pt.noteHtml : undefined,
-        noteText: typeof pt.noteText === 'string' ? pt.noteText : undefined,
       })
       placeIds.push(placeId)
       const expectedAt = String(pt.expectedAt || '')
       if (expectedAt) {
         const stopId = genId('stop')
+        const dayIndex = dayIndexOfDate(startDate, toDatePart(expectedAt))
+        const time = normalizeTimePart(toTimePart(expectedAt))
+        const note = normalizeNoteText(pt.note, pt.noteText, pt.noteHtml)
         stops.push({
           id: stopId,
           planId: id,
           placeId,
-          expectedAt,
-          createdAt: ts,
-          updatedAt: String(pt.updatedAt || ts),
+          dayIndex,
+          ...(time ? { time } : {}),
+          ...(note ? { note } : {}),
         })
         stopIds.push(stopId)
       }
@@ -173,7 +174,14 @@ function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
 
   const placesIn = Array.isArray(data.places) ? data.places : []
   const stopsIn = Array.isArray(data.stops) ? data.stops : []
+  const plans = (data.plans as Array<Record<string, unknown>>)
+    .map(normalizePlan)
+    .filter((p): p is TravelPlan => !!p)
+  const planById = new Map(plans.map((p) => [p.id, p]))
+
   const places: CollectedPlace[] = []
+  /** 旧版备注挂在 place 上，迁移到对应 stop */
+  const legacyPlaceNotes = new Map<string, string>()
   for (const item of placesIn) {
     if (!item || typeof item !== 'object') continue
     const p = item as Record<string, unknown>
@@ -189,14 +197,14 @@ function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
     ) {
       continue
     }
+    const legacyNote = normalizeNoteText(p.note, p.noteText, p.noteHtml)
+    if (legacyNote) legacyPlaceNotes.set(id, legacyNote)
     places.push({
       id,
       planId,
       place: info,
       createdAt: String(p.createdAt || nowIso()),
       updatedAt: String(p.updatedAt || nowIso()),
-      noteHtml: typeof p.noteHtml === 'string' ? p.noteHtml : undefined,
-      noteText: typeof p.noteText === 'string' ? p.noteText : undefined,
       extra:
         p.extra && typeof p.extra === 'object'
           ? (p.extra as Record<string, unknown>)
@@ -211,27 +219,37 @@ function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
     const id = String(s.id || '')
     const planId = String(s.planId || '')
     const placeId = String(s.placeId || '')
-    const expectedAt = String(s.expectedAt || '')
-    if (!id || !planId || !placeId || !expectedAt) continue
+    if (!id || !planId || !placeId) continue
+    const plan = planById.get(planId)
+    const expectedAt = typeof s.expectedAt === 'string' ? s.expectedAt : ''
+    let dayIndex =
+      typeof s.dayIndex === 'number' && Number.isFinite(s.dayIndex)
+        ? Math.max(0, Math.floor(s.dayIndex))
+        : null
+    if (dayIndex == null && expectedAt) {
+      dayIndex = dayIndexOfDate(
+        plan?.startDate || todayDatePart(),
+        toDatePart(expectedAt),
+      )
+    }
+    if (dayIndex == null) continue
+    let time = normalizeTimePart(s.time)
+    if (!time && expectedAt) time = normalizeTimePart(toTimePart(expectedAt))
+    let note = normalizeNoteText(s.note, s.noteText, s.noteHtml)
+    if (!note) note = legacyPlaceNotes.get(placeId)
     stops.push({
       id,
       planId,
       placeId,
-      expectedAt,
-      createdAt: String(s.createdAt || nowIso()),
-      updatedAt: String(s.updatedAt || nowIso()),
-      noteHtml: typeof s.noteHtml === 'string' ? s.noteHtml : undefined,
-      noteText: typeof s.noteText === 'string' ? s.noteText : undefined,
+      dayIndex,
+      ...(time ? { time } : {}),
+      ...(note ? { note } : {}),
       extra:
         s.extra && typeof s.extra === 'object'
           ? (s.extra as Record<string, unknown>)
           : undefined,
     })
   }
-
-  const plans = (data.plans as Array<Record<string, unknown>>)
-    .map(normalizePlan)
-    .filter((p): p is TravelPlan => !!p)
 
   const store: AppDataStore = {
     version: DATA_VERSION,
@@ -241,15 +259,25 @@ function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
     stops,
   }
 
+  for (const plan of store.plans) {
+    const maxIdx = store.stops
+      .filter((s) => s.planId === plan.id)
+      .reduce((m, s) => Math.max(m, s.dayIndex), -1)
+    if (maxIdx + 1 > plan.dayCount) plan.dayCount = maxIdx + 1
+  }
+
   const prevVersion = Number(data.version) || 0
   if (prevVersion < 3) {
     for (const plan of store.plans) {
       const ordered = store.stops
         .filter((s) => s.planId === plan.id)
-        .sort(
-          (a, b) =>
-            new Date(a.expectedAt).getTime() - new Date(b.expectedAt).getTime(),
-        )
+        .sort((a, b) => {
+          if (a.dayIndex !== b.dayIndex) return a.dayIndex - b.dayIndex
+          const at = a.time || ''
+          const bt = b.time || ''
+          if (at && bt && at !== bt) return at.localeCompare(bt)
+          return a.id.localeCompare(b.id)
+        })
         .map((s) => s.id)
       plan.stopIds = ordered
     }
@@ -454,12 +482,6 @@ export function mergePlans(planIds: string[]): MergePlansResult {
     const existingId = dedupeMap.get(key)
     if (existingId) {
       placeIdMap.set(place.id, existingId)
-      const kept = newPlaces.find((p) => p.id === existingId)
-      if (kept && !kept.noteText?.trim() && place.noteText?.trim()) {
-        kept.noteHtml = place.noteHtml
-        kept.noteText = place.noteText
-        kept.updatedAt = ts
-      }
       return
     }
     const id = genId('place')
@@ -471,14 +493,13 @@ export function mergePlans(planIds: string[]): MergePlansResult {
       place: { ...place.place },
       createdAt: place.createdAt || ts,
       updatedAt: ts,
-      noteHtml: place.noteHtml,
-      noteText: place.noteText,
       extra: place.extra ? { ...place.extra } : undefined,
     }
     newPlaces.push(cloned)
     mergedPlaceIds.push(id)
   }
 
+  const stopDateParts = new Map<string, string>()
   for (const plan of plans) {
     const placesById = new Map(
       store.places.filter((p) => p.planId === plan.id).map((p) => [p.id, p]),
@@ -504,21 +525,22 @@ export function mergePlans(planIds: string[]): MergePlansResult {
       const mappedPlaceId = placeIdMap.get(stop.placeId)
       if (!mappedPlaceId) continue
       const id = genId('stop')
+      const part = datePartOfDay(plan.startDate, stop.dayIndex)
+      if (part) {
+        dateCandidates.push(part)
+        stopDateParts.set(id, part)
+      }
       const cloned: TripStop = {
         id,
         planId: '',
         placeId: mappedPlaceId,
-        expectedAt: stop.expectedAt,
-        createdAt: stop.createdAt || ts,
-        updatedAt: ts,
-        noteHtml: stop.noteHtml,
-        noteText: stop.noteText,
+        dayIndex: stop.dayIndex,
+        ...(stop.time ? { time: stop.time } : {}),
+        ...(stop.note ? { note: stop.note } : {}),
         extra: stop.extra ? { ...stop.extra } : undefined,
       }
       newStops.push(cloned)
       mergedStopIds.push(id)
-      const part = toDatePart(stop.expectedAt)
-      if (part) dateCandidates.push(part)
     }
   }
 
@@ -541,7 +563,11 @@ export function mergePlans(planIds: string[]): MergePlansResult {
   }
 
   for (const place of newPlaces) place.planId = newPlan.id
-  for (const stop of newStops) stop.planId = newPlan.id
+  for (const stop of newStops) {
+    stop.planId = newPlan.id
+    const part = stopDateParts.get(stop.id)
+    if (part) stop.dayIndex = dayIndexOfDate(startDate, part)
+  }
 
   store.plans.unshift(newPlan)
   store.places.push(...newPlaces)
@@ -604,25 +630,11 @@ export function createPoint(input: {
   return createPlace({ planId: input.planId, place: input.place })
 }
 
-export function updatePlaceNote(
-  placeId: string,
-  input: { noteHtml: string; noteText: string },
-): CollectedPlace | undefined {
-  const store = readStore()
-  const idx = store.places.findIndex((p) => p.id === placeId)
-  if (idx < 0) return undefined
-  const ts = nowIso()
-  const place: CollectedPlace = {
-    ...store.places[idx],
-    noteHtml: input.noteHtml,
-    noteText: input.noteText.trim(),
-    updatedAt: ts,
-  }
-  store.places[idx] = place
-  const plan = store.plans.find((p) => p.id === place.planId)
-  if (plan) plan.updatedAt = ts
-  writeStore(store)
-  return place
+export function updateStopNote(
+  stopId: string,
+  input: { note: string },
+): TripStop | undefined {
+  return updateStopSchedule(stopId, { note: input.note.trim() || null })
 }
 
 /** 更新收藏地点的展示信息（标题 / 类型等） */
@@ -632,8 +644,6 @@ export function updatePlaceInfo(
     name?: string
     type?: string
     typecode?: string
-    noteText?: string
-    noteHtml?: string
   },
 ): CollectedPlace | undefined {
   const store = readStore()
@@ -658,12 +668,6 @@ export function updatePlaceInfo(
     place: nextPlace,
     updatedAt: ts,
   }
-  if (input.noteText !== undefined) {
-    place.noteText = input.noteText.trim()
-  }
-  if (input.noteHtml !== undefined) {
-    place.noteHtml = input.noteHtml
-  }
   store.places[idx] = place
   const plan = store.plans.find((p) => p.id === place.planId)
   if (plan) plan.updatedAt = ts
@@ -671,12 +675,20 @@ export function updatePlaceInfo(
   return place
 }
 
+/** @deprecated 用 updateStopNote */
+export function updatePlaceNote(
+  stopId: string,
+  input: { note: string },
+): TripStop | undefined {
+  return updateStopNote(stopId, input)
+}
+
 /** @deprecated */
 export function updatePointNote(
-  placeId: string,
-  input: { noteHtml: string; noteText: string; expectedAt?: string },
-): CollectedPlace | undefined {
-  return updatePlaceNote(placeId, input)
+  stopId: string,
+  input: { note: string },
+): TripStop | undefined {
+  return updateStopNote(stopId, input)
 }
 
 export function deletePlace(placeId: string): boolean {
@@ -709,7 +721,8 @@ function sortStopsByIds(stops: TripStop[], stopIds: string[]): TripStop[] {
     const ai = index.has(a.id) ? (index.get(a.id) as number) : Number.MAX_SAFE_INTEGER
     const bi = index.has(b.id) ? (index.get(b.id) as number) : Number.MAX_SAFE_INTEGER
     if (ai !== bi) return ai - bi
-    return String(a.createdAt).localeCompare(String(b.createdAt))
+    if (a.dayIndex !== b.dayIndex) return a.dayIndex - b.dayIndex
+    return a.id.localeCompare(b.id)
   })
 }
 
@@ -724,41 +737,16 @@ export function getStop(stopId: string): TripStop | undefined {
   return readStore().stops.find((s) => s.id === stopId)
 }
 
-function ensureDayInPlan(plan: TravelPlan, datePart: string) {
-  const start = new Date(`${plan.startDate}T12:00:00`)
-  const day = new Date(`${datePart}T12:00:00`)
-  if (Number.isNaN(start.getTime()) || Number.isNaN(day.getTime())) return
-  const offset = Math.round((day.getTime() - start.getTime()) / 86400000)
-  if (offset < 0) return
-  if (offset + 1 > plan.dayCount) plan.dayCount = offset + 1
+function ensureDayIndexInPlan(plan: TravelPlan, dayIndex: number) {
+  if (!Number.isFinite(dayIndex) || dayIndex < 0) return
+  const next = Math.floor(dayIndex) + 1
+  if (next > plan.dayCount) plan.dayCount = next
 }
 
-function nextTimeOnDay(store: AppDataStore, planId: string, datePart: string): string {
-  const plan = store.plans.find((p) => p.id === planId)
-  const sameDay = sortStopsByIds(
-    store.stops.filter(
-      (s) => s.planId === planId && toDatePart(s.expectedAt) === datePart,
-    ),
-    plan?.stopIds || [],
-  )
-  if (sameDay.length === 0) return combineDateTime(datePart, '09:00')
-  const last = new Date(sameDay[sameDay.length - 1].expectedAt)
-  last.setMinutes(last.getMinutes() + 60)
-  return combineDateTime(
-    datePart,
-    `${String(last.getHours()).padStart(2, '0')}:${String(last.getMinutes()).padStart(2, '0')}`,
-  )
-}
-
-/** 只改日期、保留时刻 */
-function withDatePart(expectedAt: string, datePart: string): string {
-  return combineDateTime(datePart, toTimePart(expectedAt) || '09:00')
-}
-
-/** 把若干收藏地点加到指定日期下（可重复引用） */
+/** 把若干收藏地点加到指定天（可重复引用）；默认不写 time */
 export function addStopsToDay(input: {
   planId: string
-  datePart: string
+  dayIndex: number
   placeIds: string[]
 }): TripStop[] {
   const store = readStore()
@@ -766,7 +754,8 @@ export function addStopsToDay(input: {
   if (!plan) throw new Error('计划不存在')
   const created: TripStop[] = []
   const ts = nowIso()
-  ensureDayInPlan(plan, input.datePart)
+  const dayIndex = Math.max(0, Math.floor(input.dayIndex))
+  ensureDayIndexInPlan(plan, dayIndex)
   for (const placeId of input.placeIds) {
     const place = store.places.find((p) => p.id === placeId && p.planId === input.planId)
     if (!place) continue
@@ -774,9 +763,7 @@ export function addStopsToDay(input: {
       id: genId('stop'),
       planId: input.planId,
       placeId,
-      expectedAt: nextTimeOnDay(store, input.planId, input.datePart),
-      createdAt: ts,
-      updatedAt: ts,
+      dayIndex,
     }
     store.stops.push(stop)
     plan.stopIds.push(stop.id)
@@ -789,24 +776,40 @@ export function addStopsToDay(input: {
   return created
 }
 
-export function updateStopExpectedAt(
+export function updateStopSchedule(
   stopId: string,
-  expectedAt: string,
+  input: { dayIndex?: number; time?: string | null; note?: string | null },
 ): TripStop | undefined {
   const store = readStore()
   const idx = store.stops.findIndex((s) => s.id === stopId)
   if (idx < 0) return undefined
-  const ts = nowIso()
-  const stop: TripStop = {
-    ...store.stops[idx],
-    expectedAt,
-    updatedAt: ts,
+  const prev = store.stops[idx]
+  const stop: TripStop = { ...prev }
+  if (input.dayIndex !== undefined) {
+    stop.dayIndex = Math.max(0, Math.floor(input.dayIndex))
+  }
+  if (input.time !== undefined) {
+    if (input.time == null || input.time === '') {
+      delete stop.time
+    } else {
+      const time = normalizeTimePart(input.time)
+      if (time) stop.time = time
+      else delete stop.time
+    }
+  }
+  if (input.note !== undefined) {
+    if (input.note == null || input.note === '') {
+      delete stop.note
+    } else {
+      stop.note = input.note.trim()
+      if (!stop.note) delete stop.note
+    }
   }
   store.stops[idx] = stop
   const plan = store.plans.find((p) => p.id === stop.planId)
   if (plan) {
-    ensureDayInPlan(plan, toDatePart(expectedAt))
-    plan.updatedAt = ts
+    ensureDayIndexInPlan(plan, stop.dayIndex)
+    plan.updatedAt = nowIso()
   }
   writeStore(store)
   return stop
@@ -814,12 +817,12 @@ export function updateStopExpectedAt(
 
 /**
  * 按分组顺序写回行程顺序（用于拖拽排序）
- * - 日内只改 stopIds 顺序，不改时间
- * - 跨日只改日期，保留原时刻
+ * - 日内只改 stopIds 顺序，不改 time
+ * - 跨日只改 dayIndex，保留 time
  */
 export function reorderPlanStops(
   planId: string,
-  groups: Array<{ datePart: string; stopIds: string[] }>,
+  groups: Array<{ dayIndex: number; stopIds: string[] }>,
 ): TripStop[] {
   const store = readStore()
   const plan = store.plans.find((p) => p.id === planId)
@@ -829,7 +832,8 @@ export function reorderPlanStops(
   const orderedIds: string[] = []
 
   groups.forEach((g) => {
-    ensureDayInPlan(plan, g.datePart)
+    const dayIndex = Math.max(0, Math.floor(g.dayIndex))
+    ensureDayIndexInPlan(plan, dayIndex)
     g.stopIds.forEach((stopId) => {
       if (seen.has(stopId)) return
       seen.add(stopId)
@@ -839,11 +843,10 @@ export function reorderPlanStops(
       )
       if (idx < 0) return
       const prev = store.stops[idx]
-      if (toDatePart(prev.expectedAt) === g.datePart) return
+      if (prev.dayIndex === dayIndex) return
       store.stops[idx] = {
         ...prev,
-        expectedAt: withDatePart(prev.expectedAt, g.datePart),
-        updatedAt: ts,
+        dayIndex,
       }
     })
   })
@@ -855,7 +858,22 @@ export function reorderPlanStops(
   return listStopsByPlan(planId)
 }
 
-/** @deprecated 行程时间改用 updateStopExpectedAt */
+/** @deprecated 用 updateStopSchedule */
+export function updateStopExpectedAt(
+  stopId: string,
+  expectedAt: string,
+): TripStop | undefined {
+  const store = readStore()
+  const stop = store.stops.find((s) => s.id === stopId)
+  const planStart =
+    store.plans.find((p) => p.id === stop?.planId)?.startDate || todayDatePart()
+  return updateStopSchedule(stopId, {
+    dayIndex: dayIndexOfDate(planStart, toDatePart(expectedAt)),
+    time: toTimePart(expectedAt),
+  })
+}
+
+/** @deprecated */
 export function updatePointExpectedAt(
   stopId: string,
   expectedAt: string,
