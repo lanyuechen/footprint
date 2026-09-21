@@ -1,10 +1,9 @@
 import { useDidShow, useLoad } from '@tarojs/taro'
 import { View } from '@tarojs/components'
 import Taro from '@tarojs/taro'
-import { useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
 import {
-  addStopsToDay,
   deleteStop,
   getPlan,
   getLastPlanView,
@@ -18,7 +17,13 @@ import {
 } from '../../services/storage'
 import { TimelineView } from './TimelineView'
 import { TripMapView } from './TripMapView'
+import { TypeFilter } from './TypeFilter'
 import { ViewSwitch } from './ViewSwitch'
+import {
+  collectPlaceTypeOptions,
+  filterStopsByPlaceType,
+  placeTypeFilterKey,
+} from './place-type-filter'
 import type { PlanView } from './types'
 import './index.scss'
 
@@ -28,7 +33,41 @@ export default function PlanViewPage() {
   const [places, setPlaces] = useState<CollectedPlace[]>([])
   const [stops, setStops] = useState<TripStop[]>([])
   const [viewMenuOpen, setViewMenuOpen] = useState(false)
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [filterTypeKeys, setFilterTypeKeys] = useState<string[]>([])
   const [planView, setPlanView] = useState<PlanView>(getLastPlanView)
+
+  const typeOptions = useMemo(() => collectPlaceTypeOptions(places), [places])
+  const allTypeKeys = useMemo(
+    () => typeOptions.map((o) => placeTypeFilterKey(o)),
+    [typeOptions],
+  )
+  const allTypeKeysSig = allTypeKeys.join(',')
+
+  /** 默认全选；类型增减时：仍全选则跟全新列表，否则保留交集（空则回退全选） */
+  useEffect(() => {
+    setFilterTypeKeys((prev) => {
+      if (allTypeKeys.length === 0) return []
+      if (prev.length === 0) return allTypeKeys
+      const keySet = new Set(allTypeKeys)
+      const kept = prev.filter((k) => keySet.has(k))
+      const missing = allTypeKeys.filter((k) => !kept.includes(k))
+      const hadAllExisting =
+        missing.length + kept.length === allTypeKeys.length &&
+        allTypeKeys
+          .filter((k) => !missing.includes(k))
+          .every((k) => kept.includes(k))
+      if (hadAllExisting) return allTypeKeys
+      if (kept.length === 0) return allTypeKeys
+      return kept
+    })
+  }, [allTypeKeysSig, allTypeKeys])
+
+  const filteredStops = useMemo(
+    () =>
+      filterStopsByPlaceType(stops, places, filterTypeKeys) as TripStop[],
+    [stops, places, filterTypeKeys],
+  )
 
   const refresh = (id: string) => {
     const p = getPlan(id)
@@ -66,15 +105,25 @@ export default function PlanViewPage() {
 
   const selectPlanView = (next: PlanView) => {
     setViewMenuOpen(false)
+    setFilterOpen(false)
     if (next === planView) return
     setLastPlanView(next)
     setPlanView(next)
   }
 
-  const goAddPlace = () => {
-    if (!planId) return
-    Taro.navigateTo({ url: `/pages/place-add/index?id=${planId}` })
-  }
+  const toggleViewMenu = useCallback(() => {
+    setFilterOpen(false)
+    setViewMenuOpen((v) => !v)
+  }, [])
+
+  const closeViewMenu = useCallback(() => setViewMenuOpen(false), [])
+
+  const toggleFilter = useCallback(() => {
+    setViewMenuOpen(false)
+    setFilterOpen((v) => !v)
+  }, [])
+
+  const closeFilter = useCallback(() => setFilterOpen(false), [])
 
   if (!plan) {
     return (
@@ -91,12 +140,34 @@ export default function PlanViewPage() {
       }`}
     >
       {planView === 'map' ? (
-        <TripMapView plan={plan} places={places} stops={stops} />
+        <TripMapView
+          plan={plan}
+          places={places}
+          stops={filteredStops}
+          onReorderGroups={(groups) => {
+            if (!planId) return
+            try {
+              setStops(
+                reorderPlanStops(
+                  planId,
+                  groups.map((g) => ({
+                    datePart: g.id,
+                    stopIds: g.items.map((it) => it.id),
+                  })),
+                ),
+              )
+              refreshPlanMeta(planId)
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : '排序失败'
+              Taro.showToast({ title: msg, icon: 'none' })
+            }
+          }}
+        />
       ) : (
         <TimelineView
           plan={plan}
           places={places}
-          stops={stops}
+          stops={filteredStops}
           onRemoveStop={(stopId) => {
             deleteStop(stopId)
             if (!planId) return
@@ -140,37 +211,27 @@ export default function PlanViewPage() {
               Taro.showToast({ title: msg, icon: 'none' })
             }
           }}
-          onAddStops={(datePart, placeIds) => {
-            if (!planId) return
-            try {
-              const created = addStopsToDay({ planId, datePart, placeIds })
-              setStops(listStopsByPlan(planId))
-              const p = getPlan(planId)
-              if (p) setPlan(p)
-              Taro.showToast({
-                title:
-                  created.length > 0 ? `已添加 ${created.length} 个` : '未添加',
-                icon: created.length > 0 ? 'success' : 'none',
-              })
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : '添加失败'
-              Taro.showToast({ title: msg, icon: 'none' })
-            }
-          }}
           onAddDay={() => {
             if (!planId || !plan) return
             const next = setPlanDayCount(planId, (plan.dayCount || 1) + 1)
             if (next) setPlan(next)
           }}
-          onAddPlace={goAddPlace}
         />
       )}
       <ViewSwitch
         planView={planView}
         open={viewMenuOpen}
-        onToggle={() => setViewMenuOpen((open) => !open)}
-        onClose={() => setViewMenuOpen(false)}
+        onToggle={toggleViewMenu}
+        onClose={closeViewMenu}
         onSelect={selectPlanView}
+      />
+      <TypeFilter
+        options={typeOptions}
+        selectedKeys={filterTypeKeys}
+        open={filterOpen}
+        onToggle={toggleFilter}
+        onClose={closeFilter}
+        onChange={setFilterTypeKeys}
       />
     </View>
   )

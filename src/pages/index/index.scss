@@ -58,6 +58,11 @@
   padding: 28px;
   border-radius: 16px;
   box-shadow: 0 4px 16px rgba(26, 95, 74, 0.06);
+  z-index: 0;
+
+  &--menu-open {
+    z-index: 20;
+  }
 
   &__top {
     display: flex;
@@ -124,12 +129,26 @@
     position: absolute;
     top: 52px;
     right: 0;
+    z-index: 30;
     min-width: 200px;
     padding: 8px 0;
     background: #fff;
     border-radius: 12px;
     box-shadow: 0 8px 28px rgba(15, 23, 20, 0.14);
     overflow: hidden;
+    opacity: 0;
+    transform: translateY(-12px) scale(0.96);
+    transform-origin: top right;
+    transition:
+      opacity 0.22s ease,
+      transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+    pointer-events: none;
+
+    &--open {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      pointer-events: auto;
+    }
   }
 
   &__menu-item {
@@ -146,20 +165,6 @@
     &--danger {
       color: #c45656;
     }
-  }
-
-  &__add-place {
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 4px;
-    margin-top: -4px;
-  }
-
-  &__add-place-text {
-    font-size: 24px;
-    color: #1a5f4a;
   }
 }
 
@@ -189,12 +194,13 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 48px 32px;
+  padding: 0 32px;
   box-sizing: border-box;
 }
 
 .export-dialog {
   width: 100%;
+  height: 80vh;
   max-height: 80vh;
   background: #fff;
   border-radius: 16px;
@@ -225,8 +231,7 @@
 
   &__body {
     flex: 1;
-    min-height: 240px;
-    max-height: 56vh;
+    min-height: 0;
     padding: 0 28px;
     box-sizing: border-box;
 
@@ -234,15 +239,12 @@
       display: flex;
       flex-direction: column;
       gap: 16px;
-      min-height: 320px;
     }
 
     &--merge {
       display: flex;
       flex-direction: column;
       gap: 16px;
-      min-height: 280px;
-      max-height: 56vh;
       overflow-y: auto;
     }
   }
@@ -267,8 +269,8 @@
   &__textarea {
     flex: 1;
     width: 100%;
-    min-height: 280px;
-    max-height: 48vh;
+    min-height: 0;
+    height: 0;
     box-sizing: border-box;
     padding: 20px;
     border-radius: 12px;

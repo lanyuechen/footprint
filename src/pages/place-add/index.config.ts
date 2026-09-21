@@ -1,3 +1,3 @@
 export default definePageConfig({
-  navigationBarTitleText: '添加地点',
+  navigationBarTitleText: '添加行程',
 })

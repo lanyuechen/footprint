@@ -51,6 +51,9 @@ export type GroupedSortListProps<T extends { id: string }> = {
   footerSlot?: React.ReactNode
   /** footer 高度（屏幕 px），有 footerSlot 时生效 */
   footerHeight?: number
+  /** 外部请求将条目滚到列表顶部；配合 scrollToSeq 触发 */
+  scrollToId?: string
+  scrollToSeq?: number
 }
 
 type LayoutItem<T> = {
@@ -648,6 +651,28 @@ export function GroupedSortList<T extends { id: string }>(
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flatIds, dragging, props.layoutKey])
+
+  /** 外部滚到指定条目顶部 */
+  useEffect(() => {
+    const id = props.scrollToId
+    const seq = props.scrollToSeq
+    if (!id || !seq || dragging) return
+
+    const run = (attempt = 0) => {
+      if (activeIdRef.current) return
+      const item = layoutByIdRef.current.get(id)
+      if (!item) {
+        if (attempt < 8) setTimeout(() => run(attempt + 1), 50)
+        return
+      }
+      const maxScroll = Math.max(0, areaHRef.current - viewportHRef.current)
+      const top = Math.min(maxScroll, Math.max(0, item.baseY))
+      applyProgramScroll(nudgeScroll(top))
+    }
+
+    Taro.nextTick(() => run())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.scrollToSeq, props.scrollToId, dragging])
 
   // —— 拖拽：虚拟滚动 / 贴边自动滚 ——
   const stopAutoScroll = () => {

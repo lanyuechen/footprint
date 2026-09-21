@@ -51,9 +51,7 @@ type TimelineViewProps = {
   onReschedule: (stopId: string, expectedAt: string) => void
   onUpdatePlace: (placeId: string, input: PlaceInfoPatch) => void
   onReorderGroups: (groups: SortGroup<TimelineStopView>[]) => void
-  onAddStops: (datePart: string, placeIds: string[]) => void
   onAddDay: () => void
-  onAddPlace: () => void
 }
 
 type EditDraft = {
@@ -87,12 +85,8 @@ export function TimelineView({
   onReschedule,
   onUpdatePlace,
   onReorderGroups,
-  onAddStops,
   onAddDay,
-  onAddPlace,
 }: TimelineViewProps) {
-  const [addDayKey, setAddDayKey] = useState('')
-  const [pickedIds, setPickedIds] = useState<string[]>([])
   const [expandedId, setExpandedId] = useState('')
   const [typePickPlaceId, setTypePickPlaceId] = useState('')
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null)
@@ -133,24 +127,9 @@ export function TimelineView({
       : null
 
   const openAdd = (datePart: string) => {
-    setPickedIds([])
-    setAddDayKey(datePart)
-  }
-
-  const togglePick = (placeId: string) => {
-    setPickedIds((prev) =>
-      prev.includes(placeId) ? prev.filter((id) => id !== placeId) : [...prev, placeId],
-    )
-  }
-
-  const confirmAdd = () => {
-    if (!addDayKey || pickedIds.length === 0) {
-      Taro.showToast({ title: '请选择地点', icon: 'none' })
-      return
-    }
-    onAddStops(addDayKey, pickedIds)
-    setAddDayKey('')
-    setPickedIds([])
+    Taro.navigateTo({
+      url: `/pages/place-add/index?id=${plan.id}&day=${datePart}`,
+    })
   }
 
   const openTypePick = (placeId: string) => {
@@ -419,69 +398,6 @@ export function TimelineView({
           )
         }}
       />
-
-      {addDayKey ? (
-        <View className='place-picker'>
-          <View className='place-picker__mask' onClick={() => setAddDayKey('')} />
-          <View className='place-picker__sheet'>
-            <View className='place-picker__head'>
-              <Text className='place-picker__title'>添加到行程</Text>
-              <Text
-                className='place-picker__add-place'
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setAddDayKey('')
-                  onAddPlace()
-                }}
-              >
-                添加地点
-              </Text>
-            </View>
-            <View className='place-picker__sub'>可多选，同一地点可重复添加</View>
-            <ScrollView scrollY className='place-picker__list'>
-              {places.length === 0 ? (
-                <View className='place-picker__empty'>暂无收藏地点，请先添加</View>
-              ) : (
-                places.map((item) => {
-                  const selected = pickedIds.includes(item.id)
-                  return (
-                    <View
-                      key={item.id}
-                      className={`place-picker__item${
-                        selected ? ' place-picker__item--on' : ''
-                      }`}
-                      onClick={() => togglePick(item.id)}
-                    >
-                      <View
-                        className={`place-picker__check${
-                          selected ? ' place-picker__check--on' : ''
-                        }`}
-                      />
-                      <View className='place-picker__body'>
-                        <View className='place-picker__name'>{item.place.name}</View>
-                        {!!item.place.address && (
-                          <View className='place-picker__addr'>{item.place.address}</View>
-                        )}
-                      </View>
-                    </View>
-                  )
-                })
-              )}
-            </ScrollView>
-            <View className='place-picker__actions'>
-              <View className='place-picker__btn' onClick={() => setAddDayKey('')}>
-                取消
-              </View>
-              <View
-                className='place-picker__btn place-picker__btn--primary'
-                onClick={confirmAdd}
-              >
-                添加{pickedIds.length > 0 ? `（${pickedIds.length}）` : ''}
-              </View>
-            </View>
-          </View>
-        </View>
-      ) : null}
 
       {typePickPlaceId ? (
         <View className='place-picker'>

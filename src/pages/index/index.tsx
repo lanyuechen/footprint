@@ -4,16 +4,21 @@ import Taro from '@tarojs/taro'
 import { useState } from 'react'
 import type { TravelPlan } from '../../types'
 import { EllipsisVertical } from 'lucide-react-taro/icons/ellipsis-vertical'
-import { MapPinPlus } from 'lucide-react-taro/icons/map-pin-plus'
+import { Share2 } from 'lucide-react-taro/icons/share-2'
 import { SquarePen } from 'lucide-react-taro/icons/square-pen'
 import { Trash2 } from 'lucide-react-taro/icons/trash-2'
 import {
   deletePlan,
   getAppDataExportJson,
+  getPlan,
   importAppDataJson,
+  listPlacesByPlan,
   listPlans,
+  listStopsByPlan,
   mergePlans,
 } from '../../services/storage'
+import { planToMarkdown } from '../plan-view/plan-markdown'
+import { useDropdownAnim } from '../plan-view/useDropdownAnim'
 import './index.scss'
 
 function PlanCard({
@@ -21,7 +26,7 @@ function PlanCard({
   menuOpen,
   onToggleMenu,
   onOpenDetail,
-  onAddPlace,
+  onShare,
   onEdit,
   onDelete,
 }: {
@@ -29,12 +34,17 @@ function PlanCard({
   menuOpen: boolean
   onToggleMenu: (id: string) => void
   onOpenDetail: (id: string) => void
-  onAddPlace: (id: string) => void
+  onShare: (plan: TravelPlan) => void
   onEdit: (id: string) => void
   onDelete: (plan: TravelPlan) => void
 }) {
+  const { mounted, shown } = useDropdownAnim(menuOpen)
+
   return (
-    <View className='plan-item' onClick={() => onOpenDetail(plan.id)}>
+    <View
+      className={`plan-item${mounted ? ' plan-item--menu-open' : ''}`}
+      onClick={() => onOpenDetail(plan.id)}
+    >
       <View className='plan-item__top'>
         <View className='plan-item__main'>
           <View className='plan-item__name'>{plan.name}</View>
@@ -46,16 +56,6 @@ function PlanCard({
           )}
         </View>
         <View className='plan-item__actions'>
-          <View
-            className='plan-item__add-place'
-            onClick={(e) => {
-              e.stopPropagation()
-              onAddPlace(plan.id)
-            }}
-          >
-            <MapPinPlus size={16} color='#1a5f4a' />
-            <Text className='plan-item__add-place-text'>添加地点</Text>
-          </View>
           <View className='plan-item__more-wrap'>
             <View
               className='plan-item__more'
@@ -66,11 +66,20 @@ function PlanCard({
             >
               <EllipsisVertical size={18} color='#8a9199' />
             </View>
-            {menuOpen && (
+            {mounted ? (
               <View
-                className='plan-item__menu'
+                className={`plan-item__menu${
+                  shown ? ' plan-item__menu--open' : ''
+                }`}
                 onClick={(e) => e.stopPropagation()}
               >
+                <View
+                  className='plan-item__menu-item'
+                  onClick={() => onShare(plan)}
+                >
+                  <Share2 size={16} color='#1a5f4a' />
+                  <Text className='plan-item__menu-label'>分享</Text>
+                </View>
                 <View
                   className='plan-item__menu-item'
                   onClick={() => onEdit(plan.id)}
@@ -88,7 +97,7 @@ function PlanCard({
                   </Text>
                 </View>
               </View>
-            )}
+            ) : null}
           </View>
         </View>
       </View>
@@ -100,6 +109,8 @@ export default function IndexPage() {
   const [plans, setPlans] = useState<TravelPlan[]>([])
   const [menuId, setMenuId] = useState<string | null>(null)
   const [exportJson, setExportJson] = useState<string | null>(null)
+  const [shareMarkdown, setShareMarkdown] = useState<string | null>(null)
+  const [shareTitle, setShareTitle] = useState('')
   const [importOpen, setImportOpen] = useState(false)
   const [importText, setImportText] = useState('')
   const [mergeOpen, setMergeOpen] = useState(false)
@@ -123,14 +134,33 @@ export default function IndexPage() {
     Taro.navigateTo({ url: `/pages/plan-view/index?id=${id}` })
   }
 
-  const goAddPlace = (id: string) => {
-    setMenuId(null)
-    Taro.navigateTo({ url: `/pages/place-add/index?id=${id}` })
-  }
-
   const goEdit = (id: string) => {
     setMenuId(null)
     Taro.navigateTo({ url: `/pages/plan-edit/index?id=${id}` })
+  }
+
+  const onShare = (plan: TravelPlan) => {
+    setMenuId(null)
+    const latest = getPlan(plan.id) || plan
+    const md = planToMarkdown(
+      latest,
+      listStopsByPlan(latest.id),
+      listPlacesByPlan(latest.id),
+    )
+    setExportJson(null)
+    setImportOpen(false)
+    setMergeOpen(false)
+    setShareTitle(latest.name || '未命名计划')
+    setShareMarkdown(md)
+  }
+
+  const onCopyShare = async () => {
+    if (!shareMarkdown) return
+    try {
+      await Taro.setClipboardData({ data: shareMarkdown })
+    } catch {
+      Taro.showToast({ title: '复制失败', icon: 'none' })
+    }
   }
 
   const onDelete = async (plan: TravelPlan) => {
@@ -149,6 +179,7 @@ export default function IndexPage() {
   const onExport = () => {
     setImportOpen(false)
     setMergeOpen(false)
+    setShareMarkdown(null)
     setExportJson(getAppDataExportJson())
   }
 
@@ -163,6 +194,7 @@ export default function IndexPage() {
 
   const onOpenImport = () => {
     setExportJson(null)
+    setShareMarkdown(null)
     setMergeOpen(false)
     setImportText('')
     setImportOpen(true)
@@ -174,6 +206,7 @@ export default function IndexPage() {
       return
     }
     setExportJson(null)
+    setShareMarkdown(null)
     setImportOpen(false)
     setMergeSelected([])
     setMergeOpen(true)
@@ -294,7 +327,7 @@ export default function IndexPage() {
                 setMenuId((prev) => (prev === id ? null : id))
               }
               onOpenDetail={goDetail}
-              onAddPlace={goAddPlace}
+              onShare={onShare}
               onEdit={goEdit}
               onDelete={onDelete}
             />
@@ -305,6 +338,48 @@ export default function IndexPage() {
       <View className='add-plan' onClick={goCreate}>
         <Text className='add-plan__text'>+ 添加计划</Text>
       </View>
+
+      {shareMarkdown != null ? (
+        <View
+          className='export-mask'
+          catchMove
+          onClick={() => setShareMarkdown(null)}
+        >
+          <View
+            className='export-dialog'
+            onClick={(e) => e.stopPropagation()}
+          >
+            <View className='export-dialog__head'>
+              <Text className='export-dialog__title'>
+                分享 · {shareTitle}
+              </Text>
+              <Text
+                className='export-dialog__close'
+                onClick={() => setShareMarkdown(null)}
+              >
+                关闭
+              </Text>
+            </View>
+            <View className='export-dialog__body export-dialog__body--import'>
+              <Text className='export-dialog__hint'>
+                已生成 Markdown，复制后可贴到备忘录、微信等分享
+              </Text>
+              <Textarea
+                className='export-dialog__textarea'
+                value={shareMarkdown}
+                maxlength={-1}
+                disabled
+                showConfirmBar={false}
+              />
+            </View>
+            <View className='export-dialog__foot'>
+              <View className='export-dialog__btn' onClick={onCopyShare}>
+                <Text className='export-dialog__btn-text'>复制 Markdown</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+      ) : null}
 
       {exportJson != null ? (
         <View

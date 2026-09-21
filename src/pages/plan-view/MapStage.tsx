@@ -1,13 +1,11 @@
-import { View, Text, Input, ScrollView, RichText } from '@tarojs/components'
-import { memo, useState, type MutableRefObject } from 'react'
-import Taro from '@tarojs/taro'
-import { Navigation } from 'lucide-react-taro/icons/navigation'
+import { View, Text, Input, ScrollView } from '@tarojs/components'
+import { memo, type MutableRefObject } from 'react'
 import { MapPin } from 'lucide-react-taro/icons/map-pin'
 import { Star } from 'lucide-react-taro/icons/star'
 import { PlanMap } from '../../components/sheet-map'
 import type { PlaceInfo, CollectedPlace } from '../../types'
 import { formatDistance } from '../../utils/datetime'
-import { isSamePlace, placeInfoRows } from './place-info'
+import { isSamePlace } from './place-info'
 import type { MapUiMode, PreviewKind, SheetPos } from './types'
 
 export type MapStageProps = {
@@ -56,6 +54,8 @@ export type MapStageProps = {
   mapPickedPlace: PlaceInfo | null
   focusPointOnMap: (point: CollectedPlace) => void
   onToggleCollectedListStar: (point: CollectedPlace) => void
+  isPlacePicked: (place: PlaceInfo) => boolean
+  onToggleTripPick: (place: PlaceInfo) => void
 }
 
 function highlightParts(text: string, keyword: string) {
@@ -222,8 +222,9 @@ export function MapStage(props: MapStageProps) {
     mapPickedPlace,
     focusPointOnMap,
     onToggleCollectedListStar,
+    isPlacePicked,
+    onToggleTripPick,
   } = props
-  const [expandedId, setExpandedId] = useState('')
   const mapPickedActive =
     !!mapPickedPlace &&
     !!selectedPlace &&
@@ -237,6 +238,18 @@ export function MapStage(props: MapStageProps) {
     results.some((item) => isSamePlace(item, mapPickedPlace))
   const showMapPickedCard =
     !!mapPickedPlace && !mapPickedInCollected && !mapPickedInResults
+  const renderPickCheck = (place: PlaceInfo) => {
+    const on = isPlacePicked(place)
+    return (
+      <View
+        className={`sheet-point__check${on ? ' sheet-point__check--on' : ''}`}
+        onClick={(e) => {
+          e.stopPropagation()
+          onToggleTripPick(place)
+        }}
+      />
+    )
+  }
   return (
 <View className='map-stage'>
   <PlanMap
@@ -309,7 +322,9 @@ export function MapStage(props: MapStageProps) {
     {showSheetBody && (
       <ScrollView
         scrollY
-        className='sheet__body'
+        className={`sheet__body${
+          sheetPos !== 'bottom' ? ' sheet__body--trip-pick' : ''
+        }`}
         enhanced
         showScrollbar
         scrollWithAnimation
@@ -425,7 +440,7 @@ export function MapStage(props: MapStageProps) {
               : '暂无收藏地点，可在地图上选点收藏'}
           </View>
         ) : (
-          points.map((point, index) => {
+          points.map((point) => {
             const collected = !deferredUncollectIds.has(point.id)
             const active =
               mapUi === 'preview' &&
@@ -433,25 +448,21 @@ export function MapStage(props: MapStageProps) {
               isSamePlace(point.place, selectedPlace) &&
               (previewKind === 'collected' ||
                 (!!mapPickedPlace && isSamePlace(mapPickedPlace, point.place)))
-            const open = active && expandedId === point.id
+            const picked = isPlacePicked(point.place)
             return (
             <View
               id={`collected-${point.id}`}
               key={point.id}
-              className={`sheet-point ${active ? 'sheet-point--active' : ''} ${
-                open ? 'sheet-point--open' : ''
+              className={`sheet-point ${active ? 'sheet-point--active' : ''}${
+                picked ? ' sheet-point--picked' : ''
               }`}
               onClick={() => {
-                if (!active) {
-                  setExpandedId('')
-                  focusPointOnMap(point)
-                  return
-                }
-                setExpandedId(open ? '' : point.id)
+                onToggleTripPick(point.place)
+                if (!active) focusPointOnMap(point)
               }}
             >
               <View className='sheet-point__row'>
-                <Text className='sheet-point__index'>{index + 1}</Text>
+                {renderPickCheck(point.place)}
                 <View className='sheet-point__body'>
                   <View className='sheet-point__name'>
                     {point.place.name}
@@ -465,16 +476,6 @@ export function MapStage(props: MapStageProps) {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <View
-                    className='nav-entry'
-                    onClick={() => {
-                      Taro.navigateTo({
-                        url: `/pages/nav/index?pointId=${point.id}`,
-                      })
-                    }}
-                  >
-                    <Navigation size={16} color='#1a5f4a' />
-                  </View>
-                  <View
                     className='collect-star'
                     onClick={() => onToggleCollectedListStar(point)}
                   >
@@ -484,27 +485,6 @@ export function MapStage(props: MapStageProps) {
                       filled={collected}
                     />
                   </View>
-                </View>
-              </View>
-              <View className='sheet-point__detail'>
-                <View className='sheet-point__detail-inner'>
-                  {placeInfoRows(point.place).map((row) => (
-                    <View key={row.label} className='sheet-point__info-row'>
-                      <View className='sheet-point__info-label'>{row.label}</View>
-                      <View className='sheet-point__info-value'>{row.value}</View>
-                    </View>
-                  ))}
-                  <View className='sheet-point__detail-divider' />
-                  {point.noteHtml?.trim() ? (
-                    <RichText
-                      className='sheet-point__detail-html'
-                      nodes={point.noteHtml}
-                    />
-                  ) : point.noteText?.trim() ? (
-                    <View className='sheet-point__detail-text'>{point.noteText}</View>
-                  ) : (
-                    <View className='sheet-point__detail-empty'>暂无备注</View>
-                  )}
                 </View>
               </View>
             </View>

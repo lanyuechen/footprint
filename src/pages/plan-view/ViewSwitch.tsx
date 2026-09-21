@@ -3,6 +3,7 @@ import { View, Text } from '@tarojs/components'
 import { ListTree } from 'lucide-react-taro/icons/list-tree'
 import { MapPinned } from 'lucide-react-taro/icons/map-pinned'
 import type { PlanView } from './types'
+import { useDropdownAnim } from './useDropdownAnim'
 
 const PLAN_VIEWS: Array<{ id: PlanView; label: string }> = [
   { id: 'map', label: '地图' },
@@ -24,6 +25,8 @@ export function ViewSwitch({
   onClose,
   onSelect,
 }: ViewSwitchProps) {
+  const { mounted, shown } = useDropdownAnim(open)
+
   return (
     <Fragment>
       <View className='map-fab map-fab--right' onClick={onToggle}>
@@ -33,8 +36,8 @@ export function ViewSwitch({
           <ListTree size={16} color='#1a5f4a' />
         )}
       </View>
-      {open && (
-        <View className='view-menu'>
+      {mounted ? (
+        <View className={`view-menu${shown ? ' view-menu--open' : ''}`}>
           <View className='view-menu__mask' onClick={onClose} />
           <View className='view-menu__panel'>
             {PLAN_VIEWS.map((item) => {
@@ -56,7 +59,7 @@ export function ViewSwitch({
             })}
           </View>
         </View>
-      )}
+      ) : null}
     </Fragment>
   )
 }

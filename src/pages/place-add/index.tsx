@@ -2,10 +2,8 @@ import { useDidShow, useLoad } from '@tarojs/taro'
 import { View } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { ListTree } from 'lucide-react-taro/icons/list-tree'
 import {
   DEFAULT_CENTER,
-  MAP_CENTER_EASE_MS,
   MARKER_ID_SEARCH,
   SEARCH_DEBOUNCE_MS,
   coverRatioFromSheetHeight,
@@ -24,6 +22,7 @@ import {
 } from '../../services/amap'
 import type { UserLocation } from '../../services/amap'
 import {
+  addStopsToDay,
   createPlace,
   deletePlace,
   getPlan,
@@ -60,6 +59,8 @@ function placeMarkerIcon(place: PlaceInfo, selected: boolean) {
 
 export default function PlaceAddPage() {
   const [planId, setPlanId] = useState('')
+  /** 时间轴传入的日期 YYYY-MM-DD */
+  const [tripDay, setTripDay] = useState('')
   const [plan, setPlan] = useState<TravelPlan | null>(null)
   const [places, setPlaces] = useState<CollectedPlace[]>([])
   const [mapUi, setMapUi] = useState<MapUiMode>('browsing')
@@ -77,6 +78,10 @@ export default function PlaceAddPage() {
   const [pinnedSearchPlace, setPinnedSearchPlace] = useState<PlaceInfo | null>(null)
   /** 地图点选出来的地点，展示在搜索结果和已收藏之上 */
   const [mapPickedPlace, setMapPickedPlace] = useState<PlaceInfo | null>(null)
+  /** 行程多选：已收藏地点 id */
+  const [pickedIds, setPickedIds] = useState<string[]>([])
+  /** 行程单选：搜索结果或地图选点（至多一个，未收藏时暂存） */
+  const [pendingPlace, setPendingPlace] = useState<PlaceInfo | null>(null)
 
   const [inputFocus, setInputFocus] = useState(false)
   /** 取消搜索时先收起高度，动画结束后再切回浏览态 */
@@ -100,7 +105,6 @@ export default function PlaceAddPage() {
 
   const searchSeq = useRef(0)
   const skipBrowseRecenter = useRef(false)
-  const selectSpanSeq = useRef(0)
   const lastQueryRef = useRef('')
   const focusTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -133,7 +137,7 @@ export default function PlaceAddPage() {
     }
     setPlan(p)
     setPlaces(listPlacesByPlan(id))
-    Taro.setNavigationBarTitle({ title: '添加地点' })
+    Taro.setNavigationBarTitle({ title: '添加行程' })
   }
 
   const refreshPlanMeta = (id: string) => {
@@ -147,7 +151,14 @@ export default function PlaceAddPage() {
 
   useLoad((options) => {
     const id = options?.id || ''
+    const day = typeof options?.day === 'string' ? options.day : ''
     setPlanId(id)
+    setTripDay(day)
+    if (!id || !day) {
+      Taro.showToast({ title: '参数缺失', icon: 'none' })
+      setTimeout(() => Taro.navigateBack(), 500)
+      return
+    }
     refresh(id)
   })
 
@@ -270,13 +281,102 @@ export default function PlaceAddPage() {
     }
     try {
       const created = createPlace({ planId, place })
+      const wasPending =
+        !!pendingPlace && isSamePlace(pendingPlace, place)
       setPlaces((prev) => [created, ...prev])
+      if (wasPending) setPendingPlace(null)
+      if (wasPending) {
+        setPickedIds((prev) =>
+          prev.includes(created.id) ? prev : [...prev, created.id],
+        )
+      }
       refreshPlanMeta(planId)
       Taro.showToast({ title: '已收藏', icon: 'success' })
     } catch (err) {
       const msg = err instanceof Error ? err.message : '操作失败'
       Taro.showToast({ title: msg, icon: 'none' })
     }
+  }
+
+  const findActiveCollected = (place: PlaceInfo) =>
+    places.find(
+      (p) => isSamePlace(p.place, place) && !deferredUncollectIds.has(p.id),
+    )
+
+  const isPlacePicked = (place: PlaceInfo) => {
+    if (pendingPlace && isSamePlace(pendingPlace, place)) return true
+    const collected = findActiveCollected(place)
+    if (collected) return pickedIds.includes(collected.id)
+    return false
+  }
+
+  /** 已收藏地点多选 */
+  const toggleTripPick = (place: PlaceInfo) => {
+    const collected = findActiveCollected(place)
+    if (!collected) return
+    const inIds = pickedIds.includes(collected.id)
+    const pendingMatch = !!pendingPlace && isSamePlace(pendingPlace, place)
+    if (inIds || pendingMatch) {
+      setPickedIds((prev) => prev.filter((id) => id !== collected.id))
+      if (pendingMatch) setPendingPlace(null)
+      return
+    }
+    setPickedIds((prev) => [...prev, collected.id])
+  }
+
+  /** 搜索 / 地图：单选（替换上一次，不写入已收藏多选） */
+  const selectSoloTripPlace = (place: PlaceInfo) => {
+    setPendingPlace(place)
+  }
+
+  const tripPickCount = (() => {
+    const ids = new Set(pickedIds)
+    if (pendingPlace) {
+      const collected = findActiveCollected(pendingPlace)
+      if (collected) ids.add(collected.id)
+      else return ids.size + 1
+    }
+    return ids.size
+  })()
+
+  const confirmTripAdd = () => {
+    if (!planId || !tripDay) return
+    if (tripPickCount === 0) {
+      Taro.showToast({ title: '请选择地点', icon: 'none' })
+      return
+    }
+    try {
+      const placeIds = [...pickedIds]
+      if (pendingPlace) {
+        const existing = findActiveCollected(pendingPlace)
+        if (existing) {
+          if (!placeIds.includes(existing.id)) placeIds.push(existing.id)
+        } else {
+          const created = createPlace({ planId, place: pendingPlace })
+          placeIds.push(created.id)
+        }
+      }
+      const created = addStopsToDay({
+        planId,
+        datePart: tripDay,
+        placeIds,
+      })
+      setLastPlanView('timeline')
+      Taro.showToast({
+        title: created.length > 0 ? `已添加 ${created.length} 个` : '未添加',
+        icon: created.length > 0 ? 'success' : 'none',
+      })
+      setTimeout(() => {
+        Taro.navigateBack()
+      }, 400)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '添加失败'
+      Taro.showToast({ title: msg, icon: 'none' })
+    }
+  }
+
+  const cancelTripAdd = () => {
+    Taro.navigateBack()
   }
 
   /** 选点前先读取当前地图真实跨度，再设置锚点 */
@@ -439,7 +539,7 @@ export default function PlaceAddPage() {
     }, delayMs)
   }
 
-  /** 点击搜索框 / 添加地点：先到顶部，再聚焦 */
+  /** 点击搜索框：先到顶部，再聚焦 */
   const openSearch = () => {
     moveSheet('top')
     focusInput(280, { then: scrollSheetToTop })
@@ -458,18 +558,6 @@ export default function PlaceAddPage() {
   const dismissSheet = () => {
     clearInputFocus()
     moveSheet('bottom')
-  }
-
-  const goPlanTimeline = () => {
-    if (!planId) return
-    setLastPlanView('timeline')
-    const pages = Taro.getCurrentPages()
-    const prev = pages[pages.length - 2] as { route?: string } | undefined
-    if (prev?.route?.includes('plan-view')) {
-      Taro.navigateBack()
-      return
-    }
-    Taro.navigateTo({ url: `/pages/plan-view/index?id=${planId}` })
   }
 
   /** 按松手高度吸附：下 1/4 底、上 1/4 顶、中间 1/2 中部 */
@@ -611,6 +699,7 @@ export default function PlaceAddPage() {
         setMapPickedPlace(next)
         setPinnedSearchPlace(next)
         setSelectedPlace(next)
+        selectSoloTripPlace(next)
         if (
           !nearlySameCoord(
             { latitude: next.latitude, longitude: next.longitude },
@@ -628,20 +717,6 @@ export default function PlaceAddPage() {
       })
   }
 
-  const refreshLatSpanFromMap = (seq: number) => {
-    try {
-      Taro.createMapContext(PLACE_ADD_MAP_ID).getRegion({
-        success: (res) => {
-          if (seq !== selectSpanSeq.current) return
-          const span = Math.abs(res.northeast.latitude - res.southwest.latitude)
-          if (span > 1e-8) camera.rememberLatSpan(span)
-        },
-      })
-    } catch {
-      // 地图尚未就绪时保留估算跨度
-    }
-  }
-
   const onSelectPlace = (item: PlaceInfo, source: 'map' | 'list' = 'list') => {
     clearInputFocus()
     moveSheet('middle')
@@ -650,17 +725,12 @@ export default function PlaceAddPage() {
     setSelectedPlace(next)
     setPreviewKind('search')
     setMapPickedPlace(source === 'map' ? next : null)
-    if (source === 'map') revealSelectedPlace(next)
-    const seq = ++selectSpanSeq.current
-    camera.beginOwnMapMove()
-    camera.applyFocusViewport(
-      { latitude: item.latitude, longitude: item.longitude },
-      15,
+    selectSoloTripPlace(next)
+    // 与已收藏一致：先读真实 latSpan 再设锚点，避免 applyFocusViewport 估算跨度导致偏上/反复偏移
+    focusCoordOnMap(
+      { latitude: next.latitude, longitude: next.longitude },
+      source === 'map' ? () => revealSelectedPlace(next) : undefined,
     )
-    setTimeout(() => {
-      refreshLatSpanFromMap(seq)
-      if (seq === selectSpanSeq.current) camera.endOwnMapMove()
-    }, MAP_CENTER_EASE_MS + 80)
   }
 
   const focusPinnedSearchPlace = () => {
@@ -669,6 +739,7 @@ export default function PlaceAddPage() {
     setMapPickedPlace(next)
     setSelectedPlace(next)
     setPreviewKind('search')
+    selectSoloTripPlace(next)
     focusCoordOnMap({
       latitude: next.latitude,
       longitude: next.longitude,
@@ -686,6 +757,7 @@ export default function PlaceAddPage() {
   const markDeferredUncollect = (point: CollectedPlace) => {
     deletePlace(point.id)
     setDeferredUncollectIds((prev) => new Set(prev).add(point.id))
+    setPickedIds((prev) => prev.filter((id) => id !== point.id))
     if (planId) {
       refreshPlanMeta(planId)
     }
@@ -795,6 +867,7 @@ export default function PlaceAddPage() {
     // 不清理 pinnedSearchPlace：地图搜索点保留，搜索结果只取消高亮
     if (source === 'map') {
       setMapPickedPlace(placeFromMap(point.place))
+      selectSoloTripPlace(point.place)
     } else {
       setMapPickedPlace(null)
     }
@@ -803,9 +876,8 @@ export default function PlaceAddPage() {
         latitude: point.place.latitude,
         longitude: point.place.longitude,
       },
-      source === 'map'
-        ? () => revealSelectedPlace(point.place)
-        : () => scrollToCollectedPoint(point.id),
+      // 地图选点：列表滚到该条；列表点选：不滚顶
+      source === 'map' ? () => revealSelectedPlace(point.place) : undefined,
     )
   }
 
@@ -938,10 +1010,22 @@ export default function PlaceAddPage() {
         mapPickedPlace={mapPickedPlace}
         focusPointOnMap={focusPointOnMap}
         onToggleCollectedListStar={onToggleCollectedListStar}
+        isPlacePicked={isPlacePicked}
+        onToggleTripPick={toggleTripPick}
       />
-      <View className='map-fab map-fab--right' onClick={goPlanTimeline}>
-        <ListTree size={16} color='#1a5f4a' />
-      </View>
+      {sheetPos !== 'bottom' ? (
+        <View className='trip-confirm-bar'>
+          <View className='trip-confirm-bar__btn' onClick={cancelTripAdd}>
+            取消
+          </View>
+          <View
+            className='trip-confirm-bar__btn trip-confirm-bar__btn--primary'
+            onClick={confirmTripAdd}
+          >
+            确定{tripPickCount > 0 ? `（${tripPickCount}）` : ''}
+          </View>
+        </View>
+      ) : null}
     </View>
   )
 }

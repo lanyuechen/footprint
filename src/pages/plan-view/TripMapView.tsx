@@ -10,6 +10,7 @@ import {
 } from '../../components/sheet-map'
 import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
 import { formatClock } from '../../utils/datetime'
+import { GroupedSortList, type SortGroup } from './GroupedSortList'
 import { markerIconPath, placeAxisMark, lightenColor } from './place-axis'
 import { buildTimelineYears, type TimelineDay } from './timeline-model'
 
@@ -22,6 +23,7 @@ type TripMapViewProps = {
   plan: TravelPlan
   places: CollectedPlace[]
   stops: TripStop[]
+  onReorderGroups: (groups: SortGroup<TripStopView>[]) => void
 }
 
 const TRIP_MAP_ID = 'trip-map'
@@ -58,7 +60,12 @@ function uniqueStopsByPlace(dayStops: TripStopView[]): TripStopView[] {
   return out
 }
 
-export function TripMapView({ plan, places, stops }: TripMapViewProps) {
+export function TripMapView({
+  plan,
+  places,
+  stops,
+  onReorderGroups,
+}: TripMapViewProps) {
   const days = useMemo(() => {
     const years = buildTimelineYears(plan, stops, places)
     return years.flatMap((y) => y.days)
@@ -67,6 +74,9 @@ export function TripMapView({ plan, places, stops }: TripMapViewProps) {
   const [dayKey, setDayKey] = useState(() => days[0]?.datePart || '')
   const [sheetPos, setSheetPos] = useState<SheetPos>('bottom')
   const [selectedStopId, setSelectedStopId] = useState('')
+  const [listScrollId, setListScrollId] = useState('')
+  const [listScrollSeq, setListScrollSeq] = useState(0)
+  const listScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [daysScrollLeft, setDaysScrollLeft] = useState(0)
   const daysScrollLeftRef = useRef(0)
   const daysScrollSeq = useRef(0)
@@ -76,10 +86,26 @@ export function TripMapView({ plan, places, stops }: TripMapViewProps) {
 
   const dayStops = selectedDay?.stops || []
   const mapStops = useMemo(() => uniqueStopsByPlace(dayStops), [dayStops])
-  const mapStopsKey = useMemo(
-    () => mapStops.map((s) => s.id).join('|'),
+  /** 不含顺序：集合变化才清选中 / 重拟合 */
+  const mapStopsSetKey = useMemo(
+    () =>
+      [...mapStops.map((s) => s.id)]
+        .sort()
+        .join('|'),
     [mapStops],
   )
+
+  const sortGroups: SortGroup<TripStopView>[] = useMemo(() => {
+    if (!selectedDay) return []
+    return [
+      {
+        id: selectedDay.datePart,
+        title: selectedDay.label,
+        subtitle: selectedDay.weekday,
+        items: dayStops,
+      },
+    ]
+  }, [selectedDay, dayStops])
 
   const seedPointsRef = useRef<
     Array<{ latitude: number; longitude: number }> | null
@@ -152,7 +178,6 @@ export function TripMapView({ plan, places, stops }: TripMapViewProps) {
         const ideal =
           itemOffset + item.width / 2 - viewport.width / 2
         const maxScroll = Math.max(0, row.width - viewport.width)
-        // 能居中则居中；否则夹到 0 / max，尽量靠近中间
         const next = Math.min(maxScroll, Math.max(0, ideal))
         if (Math.abs(next - currentLeft) < 1) return
         daysScrollLeftRef.current = next
@@ -161,18 +186,26 @@ export function TripMapView({ plan, places, stops }: TripMapViewProps) {
     })
   }, [dayKey])
 
-  const mapStopsKeyRef = useRef(mapStopsKey)
-  const skipNextFit = useRef(true)
   useEffect(() => {
-    setSelectedStopId('')
-    // 首屏已用 seedPoints 拟合，跳过挂载后的第一次 fit
+    return () => {
+      if (listScrollTimer.current) clearTimeout(listScrollTimer.current)
+    }
+  }, [])
+
+  const mapStopsSetKeyRef = useRef(mapStopsSetKey)
+  const skipNextFit = useRef(true)
+
+  useEffect(() => {
+    setSelectedStopId((prev) =>
+      prev && mapStops.some((s) => s.id === prev) ? prev : '',
+    )
     if (skipNextFit.current) {
       skipNextFit.current = false
-      mapStopsKeyRef.current = mapStopsKey
+      mapStopsSetKeyRef.current = mapStopsSetKey
       return
     }
-    if (mapStopsKeyRef.current === mapStopsKey) return
-    mapStopsKeyRef.current = mapStopsKey
+    if (mapStopsSetKeyRef.current === mapStopsSetKey) return
+    mapStopsSetKeyRef.current = mapStopsSetKey
     camera.fitToPoints(
       mapStops.map((s) => ({
         latitude: s.place.latitude,
@@ -181,7 +214,7 @@ export function TripMapView({ plan, places, stops }: TripMapViewProps) {
       { animate: false },
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapStopsKey])
+  }, [mapStopsSetKey])
 
   const markers = useMemo(() => {
     return mapStops.map((stop, index) => {
@@ -209,14 +242,68 @@ export function TripMapView({ plan, places, stops }: TripMapViewProps) {
     return map
   }, [mapStops])
 
-  const focusStop = (stop: TripStopView) => {
-    const nextPos: SheetPos = sheetPos === 'bottom' ? 'middle' : sheetPos
+  const requestListScrollTo = (stopId: string, delayMs = 0) => {
+    const run = () => {
+      setListScrollId(stopId)
+      setListScrollSeq((n) => n + 1)
+    }
+    if (listScrollTimer.current) {
+      clearTimeout(listScrollTimer.current)
+      listScrollTimer.current = null
+    }
+    if (delayMs <= 0) {
+      run()
+      return
+    }
+    listScrollTimer.current = setTimeout(() => {
+      listScrollTimer.current = null
+      run()
+    }, delayMs)
+  }
+
+  const focusStop = (
+    stop: TripStopView,
+    options?: { scrollList?: boolean },
+  ) => {
+    const expanding = sheetPos === 'bottom'
+    const nextPos: SheetPos = expanding ? 'middle' : sheetPos
     setSelectedStopId(stop.id)
     if (nextPos !== sheetPos) setSheetPos(nextPos)
     camera.setFocusCoord({
       latitude: stop.place.latitude,
       longitude: stop.place.longitude,
     })
+    if (!options?.scrollList) return
+    requestListScrollTo(stop.id)
+    // 底栏展开有高度动画，结束后再滚一次
+    if (expanding) requestListScrollTo(stop.id, 360)
+  }
+
+  const sortItemHeight = useMemo(() => {
+    try {
+      const w =
+        Taro.getWindowInfo?.().windowWidth ||
+        Taro.getSystemInfoSync().windowWidth
+      return Math.round((w * 148) / 750)
+    } catch {
+      return 74
+    }
+  }, [])
+
+  const handleSortChange = (next: SortGroup<TripStopView>[]) => {
+    const reordered = next[0]
+    if (!reordered) return
+    const groups = days.map((d) =>
+      d.datePart === reordered.id
+        ? reordered
+        : {
+            id: d.datePart,
+            title: d.label,
+            subtitle: d.weekday,
+            items: d.stops,
+          },
+    )
+    onReorderGroups(groups)
   }
 
   const sheetClass = [
@@ -245,7 +332,7 @@ export function TripMapView({ plan, places, stops }: TripMapViewProps) {
         onMarkerTap={(e) => {
           const id = Number(e.detail.markerId)
           const stop = markerStopById.get(id)
-          if (stop) focusStop(stop)
+          if (stop) focusStop(stop, { scrollList: true })
         }}
         header={
           <>
@@ -290,29 +377,40 @@ export function TripMapView({ plan, places, stops }: TripMapViewProps) {
             <View className='trip-sheet__summary'>
               <Text className='trip-sheet__sub'>
                 {dayStops.length > 0
-                  ? `${dayStops.length} 个行程`
+                  ? `${dayStops.length} 个行程 · 长按拖动排序`
                   : '当天暂无行程'}
               </Text>
             </View>
           </>
         }
         body={
-          <ScrollView scrollY className='sheet__body' enhanced showScrollbar>
-            <View className='trip-sheet__list'>
-              {dayStops.length === 0 ? (
-                <View className='trip-sheet__empty'>这一天还没有安排行程</View>
-              ) : (
-                dayStops.map((stop, index) => {
-                  const active = stop.id === selectedStopId
+          dayStops.length === 0 ? (
+            <View className='trip-sheet__empty'>这一天还没有安排行程</View>
+          ) : (
+            <View className='trip-sheet__sort'>
+              <GroupedSortList
+                groups={sortGroups}
+                headerHeight={0}
+                itemHeight={sortItemHeight}
+                layoutKey={selectedStopId}
+                scrollToId={listScrollId}
+                scrollToSeq={listScrollSeq}
+                onItemClick={(id) => {
+                  const stop = dayStops.find((s) => s.id === id)
+                  if (stop) focusStop(stop)
+                }}
+                onChange={handleSortChange}
+                renderItem={(stop, { dragging }) => {
+                  const active = stop.id === selectedStopId && !dragging
                   const axis = placeAxisMark(stop.place)
                   const AxisIcon = axis.icon
+                  const index = dayStops.findIndex((s) => s.id === stop.id)
                   return (
                     <View
-                      key={stop.id}
+                      id={`trip-stop-${stop.id}`}
                       className={`trip-sheet__item${
                         active ? ' trip-sheet__item--on' : ''
                       }`}
-                      onClick={() => focusStop(stop)}
                     >
                       <View
                         className='trip-sheet__dot'
@@ -326,7 +424,7 @@ export function TripMapView({ plan, places, stops }: TripMapViewProps) {
                             {formatClock(stop.expectedAt)}
                           </Text>
                           <Text className='trip-sheet__index'>
-                            第 {index + 1} 站
+                            第 {index >= 0 ? index + 1 : 1} 站
                           </Text>
                         </View>
                         <Text className='trip-sheet__name'>
@@ -340,10 +438,10 @@ export function TripMapView({ plan, places, stops }: TripMapViewProps) {
                       </View>
                     </View>
                   )
-                })
-              )}
+                }}
+              />
             </View>
-          </ScrollView>
+          )
         }
       />
     </View>
