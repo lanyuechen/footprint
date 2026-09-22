@@ -2,10 +2,8 @@ export default defineAppConfig({
   pages: [
     'pages/index/index',
     'pages/plan-edit/index',
-    'pages/plan-view/index',
-    'pages/place-add/index',
+    'pages/trip-edit/index',
     'pages/nav/index',
-    'pages/point-note/index',
   ],
   window: {
     backgroundTextStyle: 'light',

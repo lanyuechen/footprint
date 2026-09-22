@@ -1,5 +1,5 @@
-import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
-import { buildTimelineYears } from './timeline-model'
+import type { CollectedPlace, TravelPlan, TripStop } from '../types'
+import { buildTripDays } from '../features/trip/trip-days'
 
 /** 将计划行程导出为可分享的 Markdown */
 export function planToMarkdown(
@@ -22,11 +22,11 @@ export function planToMarkdown(
     lines.push('')
   }
 
-  const years = buildTimelineYears(plan, stops, places)
+  const years = buildTripDays(plan, stops, places)
   if (years.length === 0) {
     lines.push('_暂无行程_')
     lines.push('')
-    return lines.join('\n').trimEnd() + '\n'
+    return `${lines.join('\n').trimEnd()}\n`
   }
 
   for (const year of years) {
@@ -56,5 +56,5 @@ export function planToMarkdown(
     }
   }
 
-  return lines.join('\n').trimEnd() + '\n'
+  return `${lines.join('\n').trimEnd()}\n`
 }

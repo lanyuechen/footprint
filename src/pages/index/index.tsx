@@ -12,13 +12,13 @@ import {
   getAppDataExportJson,
   getPlan,
   importAppDataJson,
-  listPlacesByPlan,
+  listAllPlacesByPlan,
   listPlans,
   listStopsByPlan,
   mergePlans,
 } from '../../services/storage'
-import { planToMarkdown } from '../plan-view/plan-markdown'
-import { useDropdownAnim } from '../plan-view/useDropdownAnim'
+import { planToMarkdown } from '../../utils/plan-markdown'
+import { useDropdownAnim } from '../../hooks/useDropdownAnim'
 import './index.scss'
 
 function PlanCard({
@@ -108,11 +108,8 @@ function PlanCard({
 export default function IndexPage() {
   const [plans, setPlans] = useState<TravelPlan[]>([])
   const [menuId, setMenuId] = useState<string | null>(null)
-  const [exportJson, setExportJson] = useState<string | null>(null)
   const [shareMarkdown, setShareMarkdown] = useState<string | null>(null)
   const [shareTitle, setShareTitle] = useState('')
-  const [importOpen, setImportOpen] = useState(false)
-  const [importText, setImportText] = useState('')
   const [mergeOpen, setMergeOpen] = useState(false)
   const [mergeSelected, setMergeSelected] = useState<string[]>([])
 
@@ -131,7 +128,7 @@ export default function IndexPage() {
 
   const goDetail = (id: string) => {
     setMenuId(null)
-    Taro.navigateTo({ url: `/pages/plan-view/index?id=${id}` })
+    Taro.navigateTo({ url: `/pages/trip-edit/index?id=${id}` })
   }
 
   const goEdit = (id: string) => {
@@ -145,10 +142,8 @@ export default function IndexPage() {
     const md = planToMarkdown(
       latest,
       listStopsByPlan(latest.id),
-      listPlacesByPlan(latest.id),
+      listAllPlacesByPlan(latest.id),
     )
-    setExportJson(null)
-    setImportOpen(false)
     setMergeOpen(false)
     setShareTitle(latest.name || '未命名计划')
     setShareMarkdown(md)
@@ -176,28 +171,138 @@ export default function IndexPage() {
     refresh()
   }
 
-  const onExport = () => {
-    setImportOpen(false)
-    setMergeOpen(false)
+  const onExportToFile = async () => {
     setShareMarkdown(null)
-    setExportJson(getAppDataExportJson())
-  }
-
-  const onCopyExport = async () => {
-    if (!exportJson) return
+    setMergeOpen(false)
     try {
-      await Taro.setClipboardData({ data: exportJson })
-    } catch {
-      Taro.showToast({ title: '复制失败', icon: 'none' })
+      const json = getAppDataExportJson()
+      const stamp = (() => {
+        const d = new Date()
+        const pad = (n: number) => String(n).padStart(2, '0')
+        return (
+          `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+          `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+        )
+      })()
+      const fileName = `footprint-${stamp}.json`
+      const filePath = `${Taro.env.USER_DATA_PATH}/${fileName}`
+      // 同步写入，避免打断点击手势导致 shareFileMessage 失败
+      Taro.getFileSystemManager().writeFileSync(filePath, json, 'utf8')
+
+      const platform =
+        Taro.getDeviceInfo?.().platform ||
+        Taro.getSystemInfoSync().platform ||
+        ''
+      // 开发者工具不支持转发文件，降级为复制 JSON
+      if (platform === 'devtools') {
+        await Taro.setClipboardData({ data: json })
+        Taro.showToast({
+          title: '模拟器已复制 JSON，真机可转发文件',
+          icon: 'none',
+          duration: 2500,
+        })
+        return
+      }
+
+      await Taro.shareFileMessage({
+        filePath,
+        fileName,
+      })
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : typeof err === 'object' &&
+              err &&
+              'errMsg' in err &&
+              typeof (err as { errMsg?: string }).errMsg === 'string'
+            ? (err as { errMsg: string }).errMsg
+            : ''
+      if (/cancel|取消/i.test(msg)) return
+      try {
+        await Taro.setClipboardData({ data: getAppDataExportJson() })
+        Taro.showToast({
+          title: '转发失败，已复制 JSON',
+          icon: 'none',
+          duration: 2500,
+        })
+      } catch {
+        Taro.showToast({
+          title: msg.includes('fail') ? '导出失败' : msg || '导出失败',
+          icon: 'none',
+        })
+      }
     }
   }
 
-  const onOpenImport = () => {
-    setExportJson(null)
+  const readJsonFile = (filePath: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      Taro.getFileSystemManager().readFile({
+        filePath,
+        encoding: 'utf8',
+        success: (res) => {
+          const data = res.data
+          resolve(typeof data === 'string' ? data : '')
+        },
+        fail: (err) => {
+          reject(new Error(err.errMsg || '读取文件失败'))
+        },
+      })
+    })
+
+  const onImportFromFile = async () => {
     setShareMarkdown(null)
     setMergeOpen(false)
-    setImportText('')
-    setImportOpen(true)
+    try {
+      const picked = await Taro.chooseMessageFile({
+        count: 1,
+        type: 'file',
+        extension: ['json'],
+      })
+      const file = picked.tempFiles?.[0]
+      if (!file?.path) {
+        Taro.showToast({ title: '未选择文件', icon: 'none' })
+        return
+      }
+      const name = file.name || '所选文件'
+      const raw = await readJsonFile(file.path)
+      if (!raw.trim()) {
+        Taro.showToast({ title: '文件为空', icon: 'none' })
+        return
+      }
+      const { confirm } = await Taro.showModal({
+        title: '确认导入',
+        content: `将用「${name}」覆盖本地全部计划、地点与行程，此操作不可撤销。`,
+        confirmText: '导入',
+        confirmColor: '#1a5f4a',
+      })
+      if (!confirm) return
+      const result = importAppDataJson(raw)
+      if (!result.ok) {
+        Taro.showToast({ title: result.message, icon: 'none' })
+        return
+      }
+      refresh()
+      Taro.showToast({
+        title: `已导入 ${result.planCount} 个计划`,
+        icon: 'success',
+      })
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : typeof err === 'object' &&
+              err &&
+              'errMsg' in err &&
+              typeof (err as { errMsg?: string }).errMsg === 'string'
+            ? (err as { errMsg: string }).errMsg
+            : ''
+      if (/cancel|取消/i.test(msg)) return
+      Taro.showToast({
+        title: msg.includes('fail') ? '选择或读取文件失败' : msg || '导入失败',
+        icon: 'none',
+      })
+    }
   }
 
   const onOpenMerge = () => {
@@ -205,9 +310,7 @@ export default function IndexPage() {
       Taro.showToast({ title: '至少需要两个计划', icon: 'none' })
       return
     }
-    setExportJson(null)
     setShareMarkdown(null)
-    setImportOpen(false)
     setMergeSelected([])
     setMergeOpen(true)
   }
@@ -245,37 +348,6 @@ export default function IndexPage() {
     })
   }
 
-  const onPasteImport = async () => {
-    try {
-      const { data } = await Taro.getClipboardData()
-      setImportText(typeof data === 'string' ? data : '')
-    } catch {
-      Taro.showToast({ title: '读取剪贴板失败', icon: 'none' })
-    }
-  }
-
-  const onConfirmImport = async () => {
-    const { confirm } = await Taro.showModal({
-      title: '确认导入',
-      content: '将用导入的数据覆盖本地全部计划、地点与行程，此操作不可撤销。',
-      confirmText: '导入',
-      confirmColor: '#1a5f4a',
-    })
-    if (!confirm) return
-    const result = importAppDataJson(importText)
-    if (!result.ok) {
-      Taro.showToast({ title: result.message, icon: 'none' })
-      return
-    }
-    setImportOpen(false)
-    setImportText('')
-    refresh()
-    Taro.showToast({
-      title: `已导入 ${result.planCount} 个计划`,
-      icon: 'success',
-    })
-  }
-
   return (
     <View className='index' onClick={() => setMenuId(null)}>
       <View className='header'>
@@ -294,7 +366,7 @@ export default function IndexPage() {
             className='header__action'
             onClick={(e) => {
               e.stopPropagation()
-              onOpenImport()
+              onImportFromFile()
             }}
           >
             导入
@@ -303,7 +375,7 @@ export default function IndexPage() {
             className='header__action'
             onClick={(e) => {
               e.stopPropagation()
-              onExport()
+              onExportToFile()
             }}
           >
             导出
@@ -375,94 +447,6 @@ export default function IndexPage() {
             <View className='export-dialog__foot'>
               <View className='export-dialog__btn' onClick={onCopyShare}>
                 <Text className='export-dialog__btn-text'>复制 Markdown</Text>
-              </View>
-            </View>
-          </View>
-        </View>
-      ) : null}
-
-      {exportJson != null ? (
-        <View
-          className='export-mask'
-          catchMove
-          onClick={() => setExportJson(null)}
-        >
-          <View
-            className='export-dialog'
-            onClick={(e) => e.stopPropagation()}
-          >
-            <View className='export-dialog__head'>
-              <Text className='export-dialog__title'>导出数据</Text>
-              <Text
-                className='export-dialog__close'
-                onClick={() => setExportJson(null)}
-              >
-                关闭
-              </Text>
-            </View>
-            <View className='export-dialog__body export-dialog__body--import'>
-              <Text className='export-dialog__hint'>
-                请用下方按钮复制；长按选中文本可能损坏空格导致无法导入
-              </Text>
-              <Textarea
-                className='export-dialog__textarea'
-                value={exportJson}
-                maxlength={-1}
-                disabled
-                showConfirmBar={false}
-              />
-            </View>
-            <View className='export-dialog__foot'>
-              <View className='export-dialog__btn' onClick={onCopyExport}>
-                <Text className='export-dialog__btn-text'>复制 JSON</Text>
-              </View>
-            </View>
-          </View>
-        </View>
-      ) : null}
-
-      {importOpen ? (
-        <View
-          className='export-mask'
-          catchMove
-          onClick={() => setImportOpen(false)}
-        >
-          <View
-            className='export-dialog'
-            onClick={(e) => e.stopPropagation()}
-          >
-            <View className='export-dialog__head'>
-              <Text className='export-dialog__title'>导入数据</Text>
-              <Text
-                className='export-dialog__close'
-                onClick={() => setImportOpen(false)}
-              >
-                关闭
-              </Text>
-            </View>
-            <View className='export-dialog__body export-dialog__body--import'>
-              <Text className='export-dialog__hint'>
-                粘贴此前导出的 JSON，将覆盖本地全部数据
-              </Text>
-              <Textarea
-                className='export-dialog__textarea'
-                value={importText}
-                maxlength={-1}
-                placeholder='在此粘贴导出的 JSON…'
-                onInput={(e) => setImportText(e.detail.value)}
-              />
-            </View>
-            <View className='export-dialog__foot export-dialog__foot--row'>
-              <View
-                className='export-dialog__btn export-dialog__btn--ghost'
-                onClick={onPasteImport}
-              >
-                <Text className='export-dialog__btn-text export-dialog__btn-text--ghost'>
-                  从剪贴板粘贴
-                </Text>
-              </View>
-              <View className='export-dialog__btn' onClick={onConfirmImport}>
-                <Text className='export-dialog__btn-text'>确认导入</Text>
               </View>
             </View>
           </View>

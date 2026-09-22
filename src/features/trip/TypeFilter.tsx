@@ -3,7 +3,7 @@ import { View, Text } from '@tarojs/components'
 import { ListFilter } from 'lucide-react-taro/icons/list-filter'
 import { lightenColor, type PlaceTypeOption } from './place-axis'
 import { placeTypeFilterKey } from './place-type-filter'
-import { useDropdownAnim } from './useDropdownAnim'
+import { useDropdownAnim } from '../../hooks/useDropdownAnim'
 
 const ICON_OFF_BG = '#f0f1f2'
 const ICON_OFF_COLOR = '#c8cdd3'
@@ -84,7 +84,7 @@ export function TypeFilter({
   return (
     <View className='type-filter-root'>
       <View
-        className={`map-fab map-fab--right map-fab--below${
+        className={`map-fab map-fab--right${
           active ? ' map-fab--active' : ''
         }`}
         onClick={handleToggle}

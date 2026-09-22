@@ -7,7 +7,12 @@ import type {
   TravelPlan,
   TripStop,
 } from '../types'
-import { datePartOfDay, dayIndexOfDate, normalizeNoteText, normalizeTimePart, toDatePart, toTimePart } from '../utils/datetime'
+import {
+  datePartOfDay,
+  dayIndexOfDate,
+  normalizeTimePart,
+  toDatePart,
+} from '../utils/datetime'
 
 function createEmptyStore(): AppDataStore {
   return {
@@ -31,107 +36,10 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
-/** 旧版 points（含 expectedAt）迁移为 places + stops */
-function migrateV1(raw: Record<string, unknown>): AppDataStore {
-  const plansIn = Array.isArray(raw.plans) ? raw.plans : []
-  const pointsIn = Array.isArray(raw.points) ? raw.points : []
-  const places: CollectedPlace[] = []
-  const stops: TripStop[] = []
-  const plans: TravelPlan[] = []
-
-  for (const item of plansIn) {
-    if (!item || typeof item !== 'object') continue
-    const p = item as Record<string, unknown>
-    const id = String(p.id || '')
-    if (!id) continue
-    const planPoints = pointsIn.filter(
-      (pt) => pt && typeof pt === 'object' && (pt as { planId?: string }).planId === id,
-    ) as Array<Record<string, unknown>>
-    let startDate = typeof p.startDate === 'string' ? p.startDate : ''
-    if (!startDate) {
-      let earliest = ''
-      for (const pt of planPoints) {
-        const at = String(pt.expectedAt || pt.createdAt || '')
-        if (!at) continue
-        const day = toDatePart(at)
-        if (!earliest || day < earliest) earliest = day
-      }
-      startDate = earliest || todayDatePart()
-    }
-    let lastDay = startDate
-    for (const pt of planPoints) {
-      const at = String(pt.expectedAt || '')
-      if (!at) continue
-      const day = toDatePart(at)
-      if (day > lastDay) lastDay = day
-    }
-    let dayCount =
-      typeof p.dayCount === 'number' && p.dayCount > 0 ? Math.floor(p.dayCount) : 1
-    if (typeof p.dayCount !== 'number') {
-      const [sy, sm, sd] = startDate.split('-').map(Number)
-      const [ey, em, ed] = lastDay.split('-').map(Number)
-      if (sy && sm && sd && ey && em && ed) {
-        const start = new Date(sy, sm - 1, sd).getTime()
-        const end = new Date(ey, em - 1, ed).getTime()
-        dayCount = Math.max(1, Math.round((end - start) / 86400000) + 1)
-      }
-    }
-    const placeIds: string[] = []
-    const stopIds: string[] = []
-    for (const pt of planPoints) {
-      const placeId = String(pt.id || genId('place'))
-      const ts = String(pt.createdAt || nowIso())
-      places.push({
-        id: placeId,
-        planId: id,
-        place: pt.place as PlaceInfo,
-        createdAt: ts,
-        updatedAt: String(pt.updatedAt || ts),
-      })
-      placeIds.push(placeId)
-      const expectedAt = String(pt.expectedAt || '')
-      if (expectedAt) {
-        const stopId = genId('stop')
-        const dayIndex = dayIndexOfDate(startDate, toDatePart(expectedAt))
-        const time = normalizeTimePart(toTimePart(expectedAt))
-        const note = normalizeNoteText(pt.note, pt.noteText, pt.noteHtml)
-        stops.push({
-          id: stopId,
-          planId: id,
-          placeId,
-          dayIndex,
-          ...(time ? { time } : {}),
-          ...(note ? { note } : {}),
-        })
-        stopIds.push(stopId)
-      }
-    }
-    plans.push({
-      id,
-      name: String(p.name || ''),
-      description: String(p.description || ''),
-      startDate,
-      dayCount: Number.isFinite(dayCount) && dayCount > 0 ? dayCount : 1,
-      placeIds,
-      stopIds,
-      createdAt: String(p.createdAt || nowIso()),
-      updatedAt: String(p.updatedAt || nowIso()),
-      userId: (p.userId as string | null | undefined) ?? null,
-    })
-  }
-
-  return {
-    version: DATA_VERSION,
-    currentUserId: (raw.currentUserId as string | null) ?? null,
-    plans,
-    places,
-    stops,
-  }
-}
-
 function normalizePlan(raw: Record<string, unknown>): TravelPlan | null {
   const id = String(raw.id || '')
   if (!id) return null
+  if (!Array.isArray(raw.placeIds)) return null
   const startDate =
     typeof raw.startDate === 'string' && raw.startDate
       ? raw.startDate
@@ -146,11 +54,7 @@ function normalizePlan(raw: Record<string, unknown>): TravelPlan | null {
     description: String(raw.description || ''),
     startDate,
     dayCount,
-    placeIds: Array.isArray(raw.placeIds)
-      ? raw.placeIds.map(String)
-      : Array.isArray(raw.pointIds)
-        ? raw.pointIds.map(String)
-        : [],
+    placeIds: raw.placeIds.map(String),
     stopIds: Array.isArray(raw.stopIds) ? raw.stopIds.map(String) : [],
     createdAt: String(raw.createdAt || nowIso()),
     updatedAt: String(raw.updatedAt || nowIso()),
@@ -162,27 +66,25 @@ function writeStore(store: AppDataStore): void {
   Taro.setStorageSync(STORAGE_KEYS.APP_DATA, { ...store, version: DATA_VERSION })
 }
 
-/** 将导出的 JSON / 原始对象解析为可写入的 store（含旧版迁移） */
+/**
+ * 解析应用数据。仅接受现行 schema（plans + places + stops，dayIndex）。
+ * 中间版 / v1 points 结构一律拒绝。
+ */
 function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
   if (Array.isArray(data.points) && !Array.isArray(data.places)) {
-    return migrateV1(data)
+    throw new Error('数据版本过旧，请使用当前版本导出的文件')
+  }
+  if (!Array.isArray(data.plans) || !Array.isArray(data.places)) {
+    throw new Error('数据格式无效：需要 plans 与 places')
   }
 
-  if (!Array.isArray(data.plans)) {
-    throw new Error('缺少 plans 字段')
-  }
-
-  const placesIn = Array.isArray(data.places) ? data.places : []
   const stopsIn = Array.isArray(data.stops) ? data.stops : []
   const plans = (data.plans as Array<Record<string, unknown>>)
     .map(normalizePlan)
     .filter((p): p is TravelPlan => !!p)
-  const planById = new Map(plans.map((p) => [p.id, p]))
 
   const places: CollectedPlace[] = []
-  /** 旧版备注挂在 place 上，迁移到对应 stop */
-  const legacyPlaceNotes = new Map<string, string>()
-  for (const item of placesIn) {
+  for (const item of data.places) {
     if (!item || typeof item !== 'object') continue
     const p = item as Record<string, unknown>
     const id = String(p.id || '')
@@ -197,8 +99,6 @@ function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
     ) {
       continue
     }
-    const legacyNote = normalizeNoteText(p.note, p.noteText, p.noteHtml)
-    if (legacyNote) legacyPlaceNotes.set(id, legacyNote)
     places.push({
       id,
       planId,
@@ -220,23 +120,11 @@ function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
     const planId = String(s.planId || '')
     const placeId = String(s.placeId || '')
     if (!id || !planId || !placeId) continue
-    const plan = planById.get(planId)
-    const expectedAt = typeof s.expectedAt === 'string' ? s.expectedAt : ''
-    let dayIndex =
-      typeof s.dayIndex === 'number' && Number.isFinite(s.dayIndex)
-        ? Math.max(0, Math.floor(s.dayIndex))
-        : null
-    if (dayIndex == null && expectedAt) {
-      dayIndex = dayIndexOfDate(
-        plan?.startDate || todayDatePart(),
-        toDatePart(expectedAt),
-      )
-    }
-    if (dayIndex == null) continue
-    let time = normalizeTimePart(s.time)
-    if (!time && expectedAt) time = normalizeTimePart(toTimePart(expectedAt))
-    let note = normalizeNoteText(s.note, s.noteText, s.noteHtml)
-    if (!note) note = legacyPlaceNotes.get(placeId)
+    if (typeof s.dayIndex !== 'number' || !Number.isFinite(s.dayIndex)) continue
+    const dayIndex = Math.max(0, Math.floor(s.dayIndex))
+    const time = normalizeTimePart(s.time)
+    const note =
+      typeof s.note === 'string' && s.note.trim() ? s.note.trim() : undefined
     stops.push({
       id,
       planId,
@@ -266,23 +154,6 @@ function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
     if (maxIdx + 1 > plan.dayCount) plan.dayCount = maxIdx + 1
   }
 
-  const prevVersion = Number(data.version) || 0
-  if (prevVersion < 3) {
-    for (const plan of store.plans) {
-      const ordered = store.stops
-        .filter((s) => s.planId === plan.id)
-        .sort((a, b) => {
-          if (a.dayIndex !== b.dayIndex) return a.dayIndex - b.dayIndex
-          const at = a.time || ''
-          const bt = b.time || ''
-          if (at && bt && at !== bt) return at.localeCompare(bt)
-          return a.id.localeCompare(b.id)
-        })
-        .map((s) => s.id)
-      plan.stopIds = ordered
-    }
-  }
-
   return store
 }
 
@@ -298,10 +169,7 @@ function readStore(): AppDataStore {
 
     const store = parseAppDataPayload(data)
     const prevVersion = Number(data.version) || 0
-    if (
-      (Array.isArray(data.points) && !Array.isArray(data.places)) ||
-      prevVersion !== DATA_VERSION
-    ) {
+    if (prevVersion !== DATA_VERSION) {
       writeStore(store)
     }
     return store
@@ -381,6 +249,106 @@ export function setPlanDayCount(planId: string, dayCount: number): TravelPlan | 
   return plan
 }
 
+/**
+ * 移除计划中某一空日：后续 stop.dayIndex 依次 -1，dayCount -1。
+ * 至少保留 1 天；当日仍有行程时拒绝。
+ */
+export function removePlanDay(
+  planId: string,
+  dayIndex: number,
+): TravelPlan | undefined {
+  const store = readStore()
+  const idx = store.plans.findIndex((p) => p.id === planId)
+  if (idx < 0) return undefined
+  const plan = store.plans[idx]
+  const dayCount = Math.max(1, plan.dayCount || 1)
+  const removeAt = Math.floor(dayIndex)
+  if (!Number.isFinite(removeAt) || removeAt < 0 || removeAt >= dayCount) {
+    return undefined
+  }
+  if (dayCount <= 1) return undefined
+
+  const hasStops = store.stops.some(
+    (s) => s.planId === planId && s.dayIndex === removeAt,
+  )
+  if (hasStops) return undefined
+
+  for (const stop of store.stops) {
+    if (stop.planId !== planId) continue
+    if (stop.dayIndex > removeAt) {
+      stop.dayIndex -= 1
+    }
+  }
+
+  const next: TravelPlan = {
+    ...plan,
+    dayCount: dayCount - 1,
+    updatedAt: nowIso(),
+  }
+  store.plans[idx] = next
+  writeStore(store)
+  return next
+}
+
+/**
+ * 调整计划日顺序：将 fromIndex 移到 toIndex，重映射各 stop.dayIndex。
+ * 日期展示仍按 startDate + 下标连续；只交换各日行程内容。
+ * @returns map[oldDayIndex] = newDayIndex
+ */
+export function reorderPlanDays(
+  planId: string,
+  fromIndex: number,
+  toIndex: number,
+): { plan: TravelPlan; map: number[] } | undefined {
+  const store = readStore()
+  const idx = store.plans.findIndex((p) => p.id === planId)
+  if (idx < 0) return undefined
+  const plan = store.plans[idx]
+  const dayCount = Math.max(1, plan.dayCount || 1)
+  const from = Math.floor(fromIndex)
+  const to = Math.floor(toIndex)
+  if (
+    !Number.isFinite(from) ||
+    !Number.isFinite(to) ||
+    from < 0 ||
+    to < 0 ||
+    from >= dayCount ||
+    to >= dayCount
+  ) {
+    return undefined
+  }
+  if (from === to) {
+    return {
+      plan,
+      map: Array.from({ length: dayCount }, (_, i) => i),
+    }
+  }
+
+  const order = Array.from({ length: dayCount }, (_, i) => i)
+  const [moved] = order.splice(from, 1)
+  order.splice(to, 0, moved)
+  const map = new Array<number>(dayCount)
+  order.forEach((oldIdx, newIdx) => {
+    map[oldIdx] = newIdx
+  })
+
+  for (const stop of store.stops) {
+    if (stop.planId !== planId) continue
+    const di = stop.dayIndex
+    if (di >= 0 && di < dayCount) {
+      stop.dayIndex = map[di]
+    }
+  }
+
+  const next: TravelPlan = {
+    ...plan,
+    updatedAt: nowIso(),
+  }
+  store.plans[idx] = next
+  writeStore(store)
+  return { plan: next, map }
+}
+
 export function deletePlan(planId: string): boolean {
   const store = readStore()
   const exists = store.plans.some((p) => p.id === planId)
@@ -399,6 +367,15 @@ function placeDedupeKey(place: PlaceInfo): string {
   const lat = Number(place.latitude.toFixed(5))
   const lng = Number(place.longitude.toFixed(5))
   return `geo:${place.name.trim()}|${lat}|${lng}`
+}
+
+function placeInfoSame(a: PlaceInfo, b: PlaceInfo): boolean {
+  if (a.poiId && b.poiId) return a.poiId === b.poiId
+  return (
+    Math.abs(a.latitude - b.latitude) < 1e-6 &&
+    Math.abs(a.longitude - b.longitude) < 1e-6 &&
+    a.name === b.name
+  )
 }
 
 function addDaysToDatePart(datePart: string, days: number): string {
@@ -583,20 +560,28 @@ export function mergePlans(planIds: string[]): MergePlansResult {
   }
 }
 
-/** 收藏地点，按收藏时间倒序 */
-export function listPlacesByPlan(planId: string): CollectedPlace[] {
+/** 计划下全部地点（含仅被行程引用、已移出收藏的），供行程解析 */
+export function listAllPlacesByPlan(planId: string): CollectedPlace[] {
   return readStore()
     .places.filter((p) => p.planId === planId)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 }
 
-export function getPlace(placeId: string): CollectedPlace | undefined {
-  return readStore().places.find((p) => p.id === placeId)
+/** 收藏地点（plan.placeIds），按收藏列表顺序 */
+export function listPlacesByPlan(planId: string): CollectedPlace[] {
+  const store = readStore()
+  const plan = store.plans.find((p) => p.id === planId)
+  if (!plan) return []
+  const map = new Map(
+    store.places.filter((p) => p.planId === planId).map((p) => [p.id, p]),
+  )
+  return plan.placeIds
+    .map((id) => map.get(id))
+    .filter((p): p is CollectedPlace => !!p)
 }
 
-/** @deprecated 用 getPlace */
-export function getPoint(placeId: string): CollectedPlace | undefined {
-  return getPlace(placeId)
+export function getPlace(placeId: string): CollectedPlace | undefined {
+  return readStore().places.find((p) => p.id === placeId)
 }
 
 export function createPlace(input: {
@@ -621,23 +606,81 @@ export function createPlace(input: {
   return collected
 }
 
-/** @deprecated 用 createPlace；忽略 expectedAt */
-export function createPoint(input: {
+/**
+ * 加入收藏：已有同地点则写回 placeIds；否则新建。
+ * 不删除任何行程。
+ */
+export function ensureFavoritePlace(input: {
   planId: string
   place: PlaceInfo
-  expectedAt?: string
 }): CollectedPlace {
-  return createPlace({ planId: input.planId, place: input.place })
+  const store = readStore()
+  const plan = store.plans.find((p) => p.id === input.planId)
+  if (!plan) throw new Error('计划不存在')
+  const existing = store.places.find(
+    (p) => p.planId === input.planId && placeInfoSame(p.place, input.place),
+  )
+  if (existing) {
+    if (!plan.placeIds.includes(existing.id)) {
+      plan.placeIds.push(existing.id)
+      plan.updatedAt = nowIso()
+      writeStore(store)
+    }
+    return existing
+  }
+  return createPlace(input)
 }
 
-export function updateStopNote(
-  stopId: string,
-  input: { note: string },
-): TripStop | undefined {
-  return updateStopSchedule(stopId, { note: input.note.trim() || null })
+/**
+ * 确保有地点记录可供行程引用；不写入收藏（placeIds）。
+ * 已有同地点则复用。
+ */
+export function ensurePlaceRecord(input: {
+  planId: string
+  place: PlaceInfo
+}): CollectedPlace {
+  const store = readStore()
+  const plan = store.plans.find((p) => p.id === input.planId)
+  if (!plan) throw new Error('计划不存在')
+  const existing = store.places.find(
+    (p) => p.planId === input.planId && placeInfoSame(p.place, input.place),
+  )
+  if (existing) return existing
+  const ts = nowIso()
+  const collected: CollectedPlace = {
+    id: genId('place'),
+    planId: input.planId,
+    place: input.place,
+    createdAt: ts,
+    updatedAt: ts,
+  }
+  store.places.push(collected)
+  plan.updatedAt = ts
+  writeStore(store)
+  return collected
 }
 
-/** 更新收藏地点的展示信息（标题 / 类型等） */
+/**
+ * 取消收藏：从 placeIds 移除。
+ * 若仍有行程引用该地点则保留 place 记录（行程不删）；否则删除 place。
+ */
+export function unfavoritePlace(placeId: string): boolean {
+  const store = readStore()
+  const place = store.places.find((p) => p.id === placeId)
+  if (!place) return false
+  const plan = store.plans.find((p) => p.id === place.planId)
+  if (plan) {
+    plan.placeIds = plan.placeIds.filter((id) => id !== placeId)
+    plan.updatedAt = nowIso()
+  }
+  const usedByStop = store.stops.some((s) => s.placeId === placeId)
+  if (!usedByStop) {
+    store.places = store.places.filter((p) => p.id !== placeId)
+  }
+  writeStore(store)
+  return true
+}
+
 export function updatePlaceInfo(
   placeId: string,
   input: {
@@ -675,22 +718,6 @@ export function updatePlaceInfo(
   return place
 }
 
-/** @deprecated 用 updateStopNote */
-export function updatePlaceNote(
-  stopId: string,
-  input: { note: string },
-): TripStop | undefined {
-  return updateStopNote(stopId, input)
-}
-
-/** @deprecated */
-export function updatePointNote(
-  stopId: string,
-  input: { note: string },
-): TripStop | undefined {
-  return updateStopNote(stopId, input)
-}
-
 export function deletePlace(placeId: string): boolean {
   const store = readStore()
   const place = store.places.find((p) => p.id === placeId)
@@ -710,11 +737,6 @@ export function deletePlace(placeId: string): boolean {
   return true
 }
 
-/** @deprecated */
-export function deletePoint(placeId: string): boolean {
-  return deletePlace(placeId)
-}
-
 function sortStopsByIds(stops: TripStop[], stopIds: string[]): TripStop[] {
   const index = new Map(stopIds.map((id, i) => [id, i]))
   return [...stops].sort((a, b) => {
@@ -731,10 +753,6 @@ export function listStopsByPlan(planId: string): TripStop[] {
   const plan = store.plans.find((p) => p.id === planId)
   const stops = store.stops.filter((s) => s.planId === planId)
   return sortStopsByIds(stops, plan?.stopIds || [])
-}
-
-export function getStop(stopId: string): TripStop | undefined {
-  return readStore().stops.find((s) => s.id === stopId)
 }
 
 function ensureDayIndexInPlan(plan: TravelPlan, dayIndex: number) {
@@ -858,29 +876,6 @@ export function reorderPlanStops(
   return listStopsByPlan(planId)
 }
 
-/** @deprecated 用 updateStopSchedule */
-export function updateStopExpectedAt(
-  stopId: string,
-  expectedAt: string,
-): TripStop | undefined {
-  const store = readStore()
-  const stop = store.stops.find((s) => s.id === stopId)
-  const planStart =
-    store.plans.find((p) => p.id === stop?.planId)?.startDate || todayDatePart()
-  return updateStopSchedule(stopId, {
-    dayIndex: dayIndexOfDate(planStart, toDatePart(expectedAt)),
-    time: toTimePart(expectedAt),
-  })
-}
-
-/** @deprecated */
-export function updatePointExpectedAt(
-  stopId: string,
-  expectedAt: string,
-): TripStop | undefined {
-  return updateStopExpectedAt(stopId, expectedAt)
-}
-
 export function deleteStop(stopId: string): boolean {
   const store = readStore()
   const stop = store.stops.find((s) => s.id === stopId)
@@ -893,36 +888,6 @@ export function deleteStop(stopId: string): boolean {
   }
   writeStore(store)
   return true
-}
-
-/** 解析行程点对应的收藏地点 */
-export function resolveStopPlace(stop: TripStop): CollectedPlace | undefined {
-  return getPlace(stop.placeId)
-}
-
-export type PlanViewMode = 'map' | 'timeline'
-
-export function getLastPlanView(): PlanViewMode {
-  try {
-    const raw = Taro.getStorageSync(STORAGE_KEYS.LAST_PLAN_VIEW)
-    if (raw === 'map' || raw === 'timeline') return raw
-  } catch {
-    // ignore
-  }
-  return 'timeline'
-}
-
-export function setLastPlanView(view: PlanViewMode) {
-  try {
-    Taro.setStorageSync(STORAGE_KEYS.LAST_PLAN_VIEW, view)
-  } catch {
-    // ignore
-  }
-}
-
-/** 旧接口：按收藏时间倒序返回地点 */
-export function listPointsByPlan(planId: string): CollectedPlace[] {
-  return listPlacesByPlan(planId)
 }
 
 /** 导出完整应用数据 JSON 文本 */

@@ -39,7 +39,7 @@ export interface PlaceInfo {
 
 /**
  * 计划内收藏的地点（地图侧维护）
- * 时间轴条目通过 placeId 引用，可重复引用
+ * 行程通过 placeId 引用，可重复引用
  */
 export interface CollectedPlace {
   id: string
@@ -51,7 +51,7 @@ export interface CollectedPlace {
 }
 
 /**
- * 时间轴上的行程点：对收藏地点的一次引用
+ * 行程点：对收藏地点的一次引用
  * 同一收藏地点可出现多次（往返等）
  */
 export interface TripStop {
@@ -67,9 +67,6 @@ export interface TripStop {
   extra?: Record<string, unknown>
 }
 
-/** @deprecated 旧名，等同 CollectedPlace */
-export type TargetPoint = CollectedPlace
-
 /**
  * 旅行计划
  */
@@ -77,7 +74,7 @@ export interface TravelPlan {
   id: string
   name: string
   description: string
-  /** 计划开始日，YYYY-MM-DD，时间轴日期以此为基准 */
+  /** 计划开始日，YYYY-MM-DD */
   startDate: string
   /** 从 startDate 起连续展示的天数，至少 1 */
   dayCount: number

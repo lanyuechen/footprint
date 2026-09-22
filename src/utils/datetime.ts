@@ -1,80 +1,3 @@
-/** 将 ISO 时间格式化为 YYYY-MM-DD HH:mm */
-export function formatDateTime(iso: string): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-    `${pad(d.getHours())}:${pad(d.getMinutes())}`
-  )
-}
-
-/** 按本地年份分组的 key */
-export function yearKey(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso || 'unknown'
-  return String(d.getFullYear())
-}
-
-/** 时间轴年份节点：2026年 */
-export function formatYearLabel(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return `${d.getFullYear()}年`
-}
-
-/** 时间轴日期节点：9月16日 */
-export function formatMonthDayLabel(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return `${d.getMonth() + 1}月${d.getDate()}日`
-}
-
-/** 时间轴日期节点：2026年3月7日 */
-export function formatDayLabel(iso: string): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
-}
-
-/** 同一天内的时刻：HH:mm */
-export function formatClock(iso: string): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-/** 收藏地点起止日的历时天数（含首尾当天）；没有有效时间则为 0 */
-export function spanDays(isos: string[]): number {
-  let start: number | null = null
-  let end: number | null = null
-  for (const iso of isos) {
-    const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) continue
-    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
-    if (start == null || day < start) start = day
-    if (end == null || day > end) end = day
-  }
-  if (start == null || end == null) return 0
-  return Math.round((end - start) / 86400000) + 1
-}
-
-/** 计划摘要：m 个地点 · n 天 */
-export function formatPlanSummary(placeCount: number, days: number): string {
-  return `${placeCount} 个地点 · ${days} 天`
-}
-
-/** 按本地日期分组的 key：YYYY-M-D */
-export function dayKey(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso || 'unknown'
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
-}
-
 /** picker 用：YYYY-MM-DD */
 export function toDatePart(iso: string): string {
   const d = iso ? new Date(iso) : new Date()
@@ -83,23 +6,6 @@ export function toDatePart(iso: string): string {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
   }
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-/** picker 用：HH:mm */
-export function toTimePart(iso: string): string {
-  const d = iso ? new Date(iso) : new Date()
-  if (Number.isNaN(d.getTime())) {
-    const now = new Date()
-    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  }
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
-/** 由日期 + 时间拼成本地时间对应的 ISO */
-export function combineDateTime(datePart: string, timePart: string): string {
-  const [y, m, d] = datePart.split('-').map(Number)
-  const [hh, mm] = timePart.split(':').map(Number)
-  return new Date(y, m - 1, d, hh, mm, 0, 0).toISOString()
 }
 
 function parseDatePartLocal(datePart: string): Date | null {
@@ -125,25 +31,6 @@ export function dayIndexOfDate(startDate: string, datePart: string): number {
   if (!start || !day) return 0
   const offset = Math.round((day.getTime() - start.getTime()) / 86400000)
   return offset < 0 ? 0 : offset
-}
-
-/** 归一备注：优先纯文本，否则从 HTML 抽文本 */
-export function normalizeNoteText(
-  note?: unknown,
-  noteText?: unknown,
-  noteHtml?: unknown,
-): string | undefined {
-  if (typeof note === 'string' && note.trim()) return note.trim()
-  if (typeof noteText === 'string' && noteText.trim()) return noteText.trim()
-  if (typeof noteHtml === 'string' && noteHtml.trim()) {
-    const plain = noteHtml
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-    return plain || undefined
-  }
-  return undefined
 }
 
 /** 校验 HH:mm；非法则返回 undefined */

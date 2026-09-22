@@ -54,6 +54,8 @@ export type GroupedSortListProps<T extends { id: string }> = {
   /** 外部请求将条目滚到列表顶部；配合 scrollToSeq 触发 */
   scrollToId?: string
   scrollToSeq?: number
+  /** 抬高对应条目层级（如下拉菜单展开时避免被后续条目遮挡） */
+  elevatedId?: string
 }
 
 type LayoutItem<T> = {
@@ -264,6 +266,7 @@ type ItemRowProps = {
   baseY: number
   height: number
   isActive: boolean
+  elevated: boolean
   transition: string
   enterAnim: boolean
   riseDelay: number
@@ -280,6 +283,7 @@ const ItemRow = memo(function ItemRow({
   baseY,
   height,
   isActive,
+  elevated,
   transition,
   enterAnim,
   riseDelay,
@@ -294,7 +298,11 @@ const ItemRow = memo(function ItemRow({
     <View
       id={`gsl-item-${id}`}
       className={`grouped-sort__item${
-        isActive ? ' grouped-sort__item--hole' : ' grouped-sort__item--rest'
+        isActive
+          ? ' grouped-sort__item--hole'
+          : elevated
+            ? ' grouped-sort__item--elevated'
+            : ' grouped-sort__item--rest'
       }`}
       style={{
         transform: `translate3d(0, ${baseY}px, 0)`,
@@ -409,8 +417,10 @@ export function GroupedSortList<T extends { id: string }>(
   const layoutByIdRef = useRef(new Map<string, LayoutItem<T>>())
   const onChangeRef = useRef(props.onChange)
   const onDragStartRef = useRef(props.onDragStart)
+  const onItemClickRef = useRef(props.onItemClick)
   onChangeRef.current = props.onChange
   onDragStartRef.current = props.onDragStart
+  onItemClickRef.current = props.onItemClick
   heightsRef.current = heights
   groupsRef.current = props.groups
   fallbackHRef.current = fallbackH
@@ -525,7 +535,7 @@ export function GroupedSortList<T extends { id: string }>(
     })
     return map
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout.items, props.layoutKey, flatIds])
+  }, [layout.items, props.layoutKey, flatIds, props.elevatedId])
 
   const headerContentById = useMemo(() => {
     const map = new Map<string, ReactNode>()
@@ -652,11 +662,11 @@ export function GroupedSortList<T extends { id: string }>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flatIds, dragging, props.layoutKey])
 
-  /** 外部滚到指定条目顶部 */
+  /** 外部滚到指定条目顶部（仅新的 scrollToSeq 触发，拖拽结束不重放） */
   useEffect(() => {
     const id = props.scrollToId
     const seq = props.scrollToSeq
-    if (!id || !seq || dragging) return
+    if (!id || !seq) return
 
     const run = (attempt = 0) => {
       if (activeIdRef.current) return
@@ -672,7 +682,7 @@ export function GroupedSortList<T extends { id: string }>(
 
     Taro.nextTick(() => run())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.scrollToSeq, props.scrollToId, dragging])
+  }, [props.scrollToSeq])
 
   // —— 拖拽：虚拟滚动 / 贴边自动滚 ——
   const stopAutoScroll = () => {
@@ -963,7 +973,7 @@ export function GroupedSortList<T extends { id: string }>(
 
   const onItemTap = (id: string) => {
     if (activeIdRef.current || ignoreClickRef.current || hasMovedRef.current) return
-    props.onItemClick?.(id)
+    onItemClickRef.current?.(id)
   }
 
   const stableTouchStart = useCallback(
@@ -1080,6 +1090,7 @@ export function GroupedSortList<T extends { id: string }>(
               baseY={item.baseY}
               height={item.height}
               isActive={item.id === activeId}
+              elevated={item.id === props.elevatedId}
               transition={pushTransition}
               enterAnim={enterAnim}
               riseDelay={riseDelayByKey[`i-${item.id}`] ?? 0}

@@ -19,6 +19,8 @@ export type SheetMapFrameProps = {
   grabClassName?: string
   showLocation?: boolean
   header?: ReactNode
+  /** 抓手区下方、列表上方（如搜索框），不参与拖拽手势 */
+  subHeader?: ReactNode
   body?: ReactNode
   onMarkerTap?: (e: { detail: { markerId: number | string } }) => void
   onPoiTap?: (e: {
@@ -40,6 +42,7 @@ export function SheetMapFrame({
   grabClassName = 'sheet-map__grab',
   showLocation = true,
   header,
+  subHeader,
   body,
   onMarkerTap,
   onPoiTap,
@@ -117,6 +120,7 @@ export function SheetMapFrame({
         >
           {header}
         </View>
+        {subHeader}
         {sheet.showSheetBody ? body : null}
       </View>
     </View>

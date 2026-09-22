@@ -25,7 +25,7 @@ import {
   setLastNavMode,
   type UserLocation,
 } from '../../services/amap'
-import { getPoint } from '../../services/storage'
+import { getPlace } from '../../services/storage'
 import { formatDistance, formatDuration } from '../../utils/datetime'
 import './index.scss'
 
@@ -108,20 +108,20 @@ export default function NavPage() {
   }
 
   useLoad((options) => {
-    const pointId = options?.pointId || ''
-    if (!pointId) {
+    const placeId = options?.placeId || options?.pointId || ''
+    if (!placeId) {
       Taro.showToast({ title: '缺少目的地', icon: 'none' })
       setTimeout(() => Taro.navigateBack(), 800)
       return
     }
-    const point = getPoint(pointId)
-    if (!point) {
+    const place = getPlace(placeId)
+    if (!place) {
       Taro.showToast({ title: '地点不存在', icon: 'none' })
       setTimeout(() => Taro.navigateBack(), 800)
       return
     }
-    setDestination(point.place)
-    Taro.setNavigationBarTitle({ title: point.place.name || '路线导航' })
+    setDestination(place.place)
+    Taro.setNavigationBarTitle({ title: place.place.name || '路线导航' })
   })
 
   useEffect(() => {
