@@ -3,6 +3,7 @@ import { DATA_VERSION, STORAGE_KEYS } from '../constants'
 import type {
   AppDataStore,
   CollectedPlace,
+  NavMode,
   PlaceInfo,
   TravelPlan,
   TripStop,
@@ -13,6 +14,11 @@ import {
   normalizeTimePart,
   toDatePart,
 } from '../utils/datetime'
+
+function normalizeTravelMode(raw: unknown): NavMode | undefined {
+  if (raw === 'walking' || raw === 'riding' || raw === 'transit') return raw
+  return undefined
+}
 
 function createEmptyStore(): AppDataStore {
   return {
@@ -125,6 +131,8 @@ function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
     const time = normalizeTimePart(s.time)
     const note =
       typeof s.note === 'string' && s.note.trim() ? s.note.trim() : undefined
+    const isKeyNode = s.isKeyNode === true
+    const travelMode = normalizeTravelMode(s.travelMode)
     stops.push({
       id,
       planId,
@@ -132,6 +140,8 @@ function parseAppDataPayload(data: Record<string, unknown>): AppDataStore {
       dayIndex,
       ...(time ? { time } : {}),
       ...(note ? { note } : {}),
+      ...(isKeyNode ? { isKeyNode: true } : {}),
+      ...(isKeyNode && travelMode ? { travelMode } : {}),
       extra:
         s.extra && typeof s.extra === 'object'
           ? (s.extra as Record<string, unknown>)
@@ -514,6 +524,10 @@ export function mergePlans(planIds: string[]): MergePlansResult {
         dayIndex: stop.dayIndex,
         ...(stop.time ? { time: stop.time } : {}),
         ...(stop.note ? { note: stop.note } : {}),
+        ...(stop.isKeyNode ? { isKeyNode: true } : {}),
+        ...(stop.isKeyNode && stop.travelMode
+          ? { travelMode: stop.travelMode }
+          : {}),
         extra: stop.extra ? { ...stop.extra } : undefined,
       }
       newStops.push(cloned)
@@ -796,7 +810,13 @@ export function addStopsToDay(input: {
 
 export function updateStopSchedule(
   stopId: string,
-  input: { dayIndex?: number; time?: string | null; note?: string | null },
+  input: {
+    dayIndex?: number
+    time?: string | null
+    note?: string | null
+    isKeyNode?: boolean | null
+    travelMode?: NavMode | null
+  },
 ): TripStop | undefined {
   const store = readStore()
   const idx = store.stops.findIndex((s) => s.id === stopId)
@@ -822,6 +842,22 @@ export function updateStopSchedule(
       stop.note = input.note.trim()
       if (!stop.note) delete stop.note
     }
+  }
+  if (input.isKeyNode !== undefined) {
+    if (input.isKeyNode) {
+      stop.isKeyNode = true
+      const mode =
+        input.travelMode !== undefined
+          ? normalizeTravelMode(input.travelMode) || 'walking'
+          : normalizeTravelMode(stop.travelMode) || 'walking'
+      stop.travelMode = mode
+    } else {
+      delete stop.isKeyNode
+      delete stop.travelMode
+    }
+  } else if (input.travelMode !== undefined && stop.isKeyNode) {
+    const mode = normalizeTravelMode(input.travelMode) || 'walking'
+    stop.travelMode = mode
   }
   store.stops[idx] = stop
   const plan = store.plans.find((p) => p.id === stop.planId)
@@ -912,6 +948,156 @@ function sanitizeImportJsonText(raw: string): string {
   return raw
     .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ')
     .replace(/^\uFEFF/, '')
+}
+
+type TypeFilterPref = {
+  selected: string[]
+  /** 保存时可选的全部类型；用于判断当时是否全选 */
+  available: string[]
+}
+
+type TypeFilterPrefsMap = Record<string, TypeFilterPref>
+
+function normalizeTypeFilterPref(raw: unknown): TypeFilterPref | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const obj = raw as Record<string, unknown>
+  if (!Array.isArray(obj.selected)) return null
+  const selected = obj.selected.map((x) => String(x)).filter(Boolean)
+  const available = Array.isArray(obj.available)
+    ? obj.available.map((x) => String(x)).filter(Boolean)
+    : selected
+  return { selected, available }
+}
+
+function readTypeFilterPrefs(): TypeFilterPrefsMap {
+  try {
+    let raw: unknown = Taro.getStorageSync(STORAGE_KEYS.TYPE_FILTER_PREFS)
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw)
+      } catch {
+        return {}
+      }
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const out: TypeFilterPrefsMap = {}
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      // 兼容旧版 string[]
+      if (Array.isArray(v)) {
+        const selected = v.map((x) => String(x)).filter(Boolean)
+        out[k] = { selected, available: selected }
+        continue
+      }
+      const pref = normalizeTypeFilterPref(v)
+      if (pref) out[k] = pref
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** null = 该计划从未保存过类型筛选 */
+export function getPlanTypeFilterPref(planId: string): TypeFilterPref | null {
+  if (!planId) return null
+  const map = readTypeFilterPrefs()
+  if (!(planId in map)) return null
+  return map[planId] ?? null
+}
+
+/** @deprecated 用 getPlanTypeFilterPref；保留兼容 */
+export function getPlanTypeFilterKeys(planId: string): string[] | null {
+  const pref = getPlanTypeFilterPref(planId)
+  return pref ? pref.selected : null
+}
+
+export function setPlanTypeFilterKeys(
+  planId: string,
+  keys: string[],
+  availableKeys?: string[],
+): void {
+  if (!planId) return
+  try {
+    const map = readTypeFilterPrefs()
+    const available = availableKeys ? [...availableKeys] : [...keys]
+    map[planId] = { selected: [...keys], available }
+    Taro.setStorageSync(STORAGE_KEYS.TYPE_FILTER_PREFS, map)
+  } catch {
+    // ignore
+  }
+}
+
+export type MapFilterPref = {
+  /** 点始终展示，仅占位兼容 */
+  showPoints: true
+  /** 是否绘制关键节点路径 */
+  showRoutes: boolean
+  /** 是否展示路径距离气泡（路径关闭时强制不展示） */
+  showRouteTips: boolean
+}
+
+const DEFAULT_MAP_FILTER: MapFilterPref = {
+  showPoints: true,
+  showRoutes: true,
+  showRouteTips: true,
+}
+
+type MapFilterPrefsMap = Record<string, MapFilterPref>
+
+function readMapFilterPrefs(): MapFilterPrefsMap {
+  try {
+    let raw: unknown = Taro.getStorageSync(STORAGE_KEYS.MAP_FILTER_PREFS)
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw)
+      } catch {
+        return {}
+      }
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const out: MapFilterPrefsMap = {}
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue
+      const obj = v as Record<string, unknown>
+      out[k] = {
+        showPoints: true,
+        showRoutes: obj.showRoutes !== false,
+        showRouteTips: obj.showRouteTips !== false,
+      }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+export function getPlanMapFilterPref(planId: string): MapFilterPref {
+  if (!planId) return { ...DEFAULT_MAP_FILTER }
+  const map = readMapFilterPrefs()
+  return map[planId] ? { ...map[planId] } : { ...DEFAULT_MAP_FILTER }
+}
+
+export function setPlanMapFilterPref(
+  planId: string,
+  pref: Partial<Pick<MapFilterPref, 'showRoutes' | 'showRouteTips'>>,
+): void {
+  if (!planId) return
+  try {
+    const map = readMapFilterPrefs()
+    const prev = map[planId] || { ...DEFAULT_MAP_FILTER }
+    map[planId] = {
+      showPoints: true,
+      showRoutes:
+        pref.showRoutes !== undefined ? !!pref.showRoutes : prev.showRoutes,
+      showRouteTips:
+        pref.showRouteTips !== undefined
+          ? !!pref.showRouteTips
+          : prev.showRouteTips,
+    }
+    Taro.setStorageSync(STORAGE_KEYS.MAP_FILTER_PREFS, map)
+  } catch {
+    // ignore
+  }
 }
 
 /** 用导出的 JSON 覆盖本地全部数据 */

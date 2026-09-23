@@ -1,18 +1,44 @@
-import { View, Text } from '@tarojs/components'
+import { View, Text, Picker, ScrollView, Textarea } from '@tarojs/components'
 import Taro from '@tarojs/taro'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { AlarmClock } from 'lucide-react-taro/icons/alarm-clock'
+import { Bike } from 'lucide-react-taro/icons/bike'
+import { BusFront } from 'lucide-react-taro/icons/bus-front'
 import { EllipsisVertical } from 'lucide-react-taro/icons/ellipsis-vertical'
+import { Footprints } from 'lucide-react-taro/icons/footprints'
 import { Navigation } from 'lucide-react-taro/icons/navigation'
 import { SquarePen } from 'lucide-react-taro/icons/square-pen'
 import { Trash2 } from 'lucide-react-taro/icons/trash-2'
-import type { CollectedPlace, TripStop } from '../../../types'
+import type { CollectedPlace, NavMode, TripStop } from '../../../types'
+import { updatePlaceInfo, updateStopSchedule } from '../../../services/storage'
+import { formatDistance } from '../../../utils/datetime'
 import { GroupedSortList, type SortGroup } from '../GroupedSortList'
-import { placeAxisMark, lightenColor } from '../place-axis'
+import {
+  PLACE_TYPE_OPTIONS,
+  placeAxisMark,
+  lightenColor,
+  matchPlaceTypeOption,
+  type PlaceTypeOption,
+} from '../place-axis'
 import { useDropdownAnim } from '../../../hooks/useDropdownAnim'
 
 export type TripStopView = TripStop & {
   place: CollectedPlace['place']
   collected: CollectedPlace
+}
+
+const KEY_NODE_TRAVEL_META: Record<
+  NavMode,
+  { label: string; Icon: typeof Footprints }
+> = {
+  walking: { label: '步行前往', Icon: Footprints },
+  riding: { label: '骑行前往', Icon: Bike },
+  transit: { label: '公交前往', Icon: BusFront },
+}
+
+function keyNodeTravelMeta(mode?: NavMode) {
+  if (mode === 'riding' || mode === 'transit') return KEY_NODE_TRAVEL_META[mode]
+  return KEY_NODE_TRAVEL_META.walking
 }
 
 /** 浏览模式 sheet 顶栏：日期 + 摘要 + 添加 */
@@ -53,31 +79,80 @@ export function TripBrowseHeader({
 
 function TripStopCard({
   stop,
+  prevStop,
+  index,
   dragging,
   selected,
   menuOpen,
   onToggleMenu,
   onEditStop,
   onRemoveStop,
+  onPickType,
+  onPickNote,
+  onStopUpdated,
+  routeDistanceByToStopId,
+  quickEditEnabled,
 }: {
   stop: TripStopView
+  prevStop: TripStopView | null
+  index: number
   dragging: boolean
   selected: boolean
   menuOpen: boolean
   onToggleMenu: () => void
   onEditStop: (stop: TripStopView) => void
   onRemoveStop: (stopId: string) => void
+  onPickType: (stop: TripStopView) => void
+  onPickNote: (stop: TripStopView) => void
+  onStopUpdated?: () => void
+  /** 到达该关键节点的路径距离（米）；有则标签展示距离 */
+  routeDistanceByToStopId?: Record<string, number>
+  /** sheet 顶部时才允许点标签 / 备注快速编辑 */
+  quickEditEnabled?: boolean
 }) {
-  const axis = placeAxisMark(stop.place)
-  const AxisIcon = axis.icon
   const timeLabel = stop.time?.trim() || ''
   const note = stop.note?.trim() || ''
   const { mounted, shown } = useDropdownAnim(menuOpen)
+  const canQuickEdit = quickEditEnabled !== false
+  const keyTravel = stop.isKeyNode ? keyNodeTravelMeta(stop.travelMode) : null
+  const KeyTravelIcon = keyTravel?.Icon
+  const routeDistLabel = formatDistance(routeDistanceByToStopId?.[stop.id])
+  const travelLabel =
+    routeDistLabel || keyTravel?.label || ''
+  const axis = placeAxisMark(stop.place)
+  const typeOption = matchPlaceTypeOption(stop.place)
+  const TypeIcon = typeOption.mark.icon
+  const typeColor = typeOption.mark.color
+  const dotStyle = selected
+    ? { backgroundColor: axis.color }
+    : { backgroundColor: lightenColor(axis.color) }
+  const numStyle = { color: selected ? '#ffffff' : axis.color }
 
   const goNav = (e: { stopPropagation: () => void }) => {
     e.stopPropagation()
     Taro.navigateTo({
       url: `/pages/nav/index?placeId=${stop.placeId}`,
+    })
+  }
+
+  const goKeyNodeNav = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation()
+    if (!prevStop) {
+      Taro.showToast({ title: '没有上一个节点', icon: 'none' })
+      return
+    }
+    const mode: NavMode =
+      stop.travelMode === 'riding' || stop.travelMode === 'transit'
+        ? stop.travelMode
+        : 'walking'
+    const fromName = encodeURIComponent(prevStop.place.name || '起点')
+    Taro.navigateTo({
+      url:
+        `/pages/nav/index?placeId=${encodeURIComponent(stop.placeId)}` +
+        `&fromLat=${prevStop.place.latitude}` +
+        `&fromLng=${prevStop.place.longitude}` +
+        `&fromName=${fromName}` +
+        `&mode=${mode}`,
     })
   }
 
@@ -89,7 +164,26 @@ function TripStopCard({
 
   const doDelete = (e: { stopPropagation: () => void }) => {
     e.stopPropagation()
-    onRemoveStop(stop.id)
+    const name = stop.place.name?.trim() || '该行程'
+    Taro.showModal({
+      title: '删除行程',
+      content: `确定删除「${name}」？`,
+      confirmText: '删除',
+      confirmColor: '#c45c5c',
+      success: (res) => {
+        if (!res.confirm) return
+        onRemoveStop(stop.id)
+      },
+    })
+  }
+
+  const setTime = (next: string) => {
+    const updated = updateStopSchedule(stop.id, { time: next || null })
+    if (!updated) {
+      Taro.showToast({ title: '设置失败', icon: 'none' })
+      return
+    }
+    onStopUpdated?.()
   }
 
   return (
@@ -98,31 +192,80 @@ function TripStopCard({
       className={`gsl-row${mounted ? ' gsl-row--menu-open' : ''}`}
     >
       <View className='gsl-rail'>
-        <View
-          className='gsl-rail__dot gsl-rail__dot--point'
-          style={{ backgroundColor: lightenColor(axis.color) }}
-        >
-          <AxisIcon size={14} color={axis.color} />
+        <View className='gsl-rail__dot gsl-rail__dot--point' style={dotStyle}>
+          <Text className='gsl-rail__num' style={numStyle}>
+            {index}
+          </Text>
         </View>
       </View>
       <View
         className={`gsl-card gsl-card--flat${
           dragging ? ' gsl-card--active' : ''
-        }${selected && !dragging ? ' gsl-card--selected' : ''}`}
-      >        <View className='gsl-card__row'>
+        }`}
+      >
+        <View className='gsl-card__row'>
           <View className='gsl-card__main'>
-            {!!timeLabel && (
-              <View className='gsl-card__time-wrap'>
-                <View className='gsl-card__time gsl-card__time--set'>
-                  {timeLabel}
-                </View>
+            <View className='gsl-card__tags'>
+              {!!timeLabel ? (
+                <Picker
+                  mode='time'
+                  value={timeLabel}
+                  onChange={(e) => {
+                    const next = String(e.detail.value || '').trim()
+                    if (!next || next === timeLabel) return
+                    setTime(next)
+                  }}
+                >
+                  <View
+                    className='gsl-card__time gsl-card__time--set'
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <AlarmClock size={12} color='#c45656' />
+                    <Text className='gsl-card__time-text'>{timeLabel}</Text>
+                  </View>
+                </Picker>
+              ) : null}
+              <View
+                className='gsl-card__type'
+                style={{
+                  color: typeColor,
+                  backgroundColor: lightenColor(typeColor, 0.88),
+                }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (!canQuickEdit) return
+                  if (menuOpen) onToggleMenu()
+                  onPickType(stop)
+                }}
+              >
+                <TypeIcon size={12} color={typeColor} />
+                <Text className='gsl-card__type-text'>{typeOption.label}</Text>
               </View>
-            )}
+              {keyTravel && KeyTravelIcon ? (
+                <View className='gsl-card__travel' onClick={goKeyNodeNav}>
+                  <KeyTravelIcon size={12} color='#1a5f4a' />
+                  <Text className='gsl-card__travel-text'>{travelLabel}</Text>
+                </View>
+              ) : null}
+            </View>
             <View className='gsl-card__name'>{stop.place.name}</View>
-            {!!stop.place.address && (
-              <View className='gsl-card__addr'>{stop.place.address}</View>
-            )}
-            {!!note && <View className='gsl-card__note'>{note}</View>}
+            <View
+              className={`gsl-card__note${
+                note ? '' : ' gsl-card__note--empty'
+              }${canQuickEdit ? '' : ' gsl-card__note--readonly'}`}
+            >
+              <Text
+                className='gsl-card__note-text'
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (!canQuickEdit || dragging) return
+                  if (menuOpen) onToggleMenu()
+                  onPickNote(stop)
+                }}
+              >
+                {note || '暂无备注'}
+              </Text>
+            </View>
           </View>
           <View
             className={`gsl-card__actions${
@@ -185,7 +328,14 @@ export type TripBrowseListProps = {
   onChange: (groups: SortGroup<TripStopView>[]) => void
   onEditStop: (stop: TripStopView) => void
   onRemoveStop: (stopId: string) => void
+  onPickType: (stop: TripStopView) => void
+  onPickNote?: (stop: TripStopView) => void
+  onStopUpdated?: () => void
   onRemoveDay?: () => void
+  /** 到达关键节点的路径距离（toStopId → meters） */
+  routeDistanceByToStopId?: Record<string, number>
+  /** sheet 顶部时才允许点标签 / 备注快速编辑 */
+  quickEditEnabled?: boolean
 }
 
 /** 浏览模式：当日行程拖拽列表 */
@@ -201,7 +351,12 @@ export function TripBrowseList({
   onChange,
   onEditStop,
   onRemoveStop,
+  onPickType,
+  onPickNote,
+  onStopUpdated,
   onRemoveDay,
+  routeDistanceByToStopId,
+  quickEditEnabled = true,
 }: TripBrowseListProps) {
   const [menuId, setMenuId] = useState<string | null>(null)
 
@@ -239,7 +394,19 @@ export function TripBrowseList({
         layoutKey={`${selectedStopId}|${dayStops
           .map(
             (s) =>
-              `${s.id}:${s.note || ''}:${s.time || ''}:${s.dayIndex}:${s.place.name}:${s.place.typecode || ''}`,
+              [
+                s.id,
+                s.note || '',
+                s.time || '',
+                s.isKeyNode ? '1' : '0',
+                s.travelMode || '',
+                routeDistanceByToStopId?.[s.id] ?? '',
+                quickEditEnabled ? '1' : '0',
+                s.dayIndex,
+                s.place.name,
+                s.place.typecode || '',
+                s.place.type || '',
+              ].join(':'),
           )
           .join(',')}`}
         scrollToId={listScrollId}
@@ -253,26 +420,226 @@ export function TripBrowseList({
           onDragStart()
         }}
         onChange={onChange}
-        renderItem={(stop, { dragging }) => (
-          <TripStopCard
-            stop={stop}
-            dragging={dragging}
-            selected={selectedStopId === stop.id}
-            menuOpen={menuId === stop.id}
-            onToggleMenu={() =>
-              setMenuId((prev) => (prev === stop.id ? null : stop.id))
-            }
-            onEditStop={(s) => {
-              setMenuId(null)
-              onEditStop(s)
-            }}
-            onRemoveStop={(stopId) => {
-              setMenuId(null)
-              onRemoveStop(stopId)
-            }}
-          />
-        )}
+        renderItem={(stop, { dragging }) => {
+          const idx = dayStops.findIndex((s) => s.id === stop.id)
+          const index = Math.max(1, idx + 1)
+          const prevStop = idx > 0 ? dayStops[idx - 1] : null
+          return (
+            <TripStopCard
+              stop={stop}
+              prevStop={prevStop}
+              index={index}
+              dragging={dragging}
+              selected={selectedStopId === stop.id}
+              menuOpen={menuId === stop.id}
+              onToggleMenu={() =>
+                setMenuId((prev) => (prev === stop.id ? null : stop.id))
+              }
+              onEditStop={(s) => {
+                setMenuId(null)
+                onEditStop(s)
+              }}
+              onRemoveStop={(stopId) => {
+                setMenuId(null)
+                onRemoveStop(stopId)
+              }}
+              onPickType={(s) => {
+                setMenuId(null)
+                onPickType(s)
+              }}
+              onPickNote={(s) => {
+                setMenuId(null)
+                onPickNote?.(s)
+              }}
+              onStopUpdated={onStopUpdated}
+              routeDistanceByToStopId={routeDistanceByToStopId}
+              quickEditEnabled={quickEditEnabled}
+            />
+          )
+        }}
       />
+    </View>
+  )
+}
+
+export type TripNoteEditSheetProps = {
+  open: boolean
+  stop: TripStopView | null
+  onClose: () => void
+  onSaved: () => void
+}
+
+/** 卡片备注：上浮框快速编辑 */
+export function TripNoteEditSheet({
+  open,
+  stop,
+  onClose,
+  onSaved,
+}: TripNoteEditSheetProps) {
+  const { mounted, shown } = useDropdownAnim(open)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (open && stop) {
+      setDraft(stop.note || '')
+      setSaving(false)
+    }
+    if (!open) {
+      setDraft('')
+      setSaving(false)
+    }
+  }, [open, stop])
+
+  if (!mounted || !stop) return null
+
+  const save = () => {
+    if (saving) return
+    const next = draft.trim()
+    const prev = stop.note?.trim() || ''
+    if (next === prev) {
+      onClose()
+      return
+    }
+    setSaving(true)
+    const updated = updateStopSchedule(stop.id, { note: next || null })
+    setSaving(false)
+    if (!updated) {
+      Taro.showToast({ title: '保存失败', icon: 'none' })
+      return
+    }
+    onSaved()
+  }
+
+  return (
+    <View
+      className={`trip-stop-edit${shown ? ' trip-stop-edit--open' : ''}`}
+      catchMove
+    >
+      <View className='trip-stop-edit__mask' onClick={onClose} />
+      <View className='trip-stop-edit__panel'>
+        <View className='trip-stop-edit__head'>
+          <Text className='trip-stop-edit__title'>备注</Text>
+          <Text className='trip-stop-edit__close' onClick={onClose}>
+            关闭
+          </Text>
+        </View>
+        <View className='trip-stop-edit__body trip-stop-edit__body--note'>
+          <View className='card-edit'>
+            <View className='card-edit__field'>
+              <Textarea
+                className='card-edit__textarea'
+                value={draft}
+                placeholder='添加备注'
+                maxlength={200}
+                autoHeight
+                focus={shown}
+                showConfirmBar={false}
+                adjustPosition
+                onInput={(e) => setDraft(e.detail.value)}
+              />
+            </View>
+          </View>
+        </View>
+        <View className='trip-stop-edit__foot'>
+          <View className='trip-stop-edit__btn' onClick={onClose}>
+            取消
+          </View>
+          <View
+            className={`trip-stop-edit__btn trip-stop-edit__btn--primary${
+              saving ? ' trip-stop-edit__btn--disabled' : ''
+            }`}
+            onClick={save}
+          >
+            保存
+          </View>
+        </View>
+      </View>
+    </View>
+  )
+}
+
+export type TripTypePickSheetProps = {
+  open: boolean
+  stop: TripStopView | null
+  onClose: () => void
+  onPicked: () => void
+}
+
+/** 卡片类型标签：快速切换地点类型 */
+export function TripTypePickSheet({
+  open,
+  stop,
+  onClose,
+  onPicked,
+}: TripTypePickSheetProps) {
+  const { mounted, shown } = useDropdownAnim(open)
+  if (!mounted || !stop) return null
+
+  const current = matchPlaceTypeOption(stop.place)
+
+  const pick = (opt: PlaceTypeOption) => {
+    if (
+      opt.typecode === current.typecode &&
+      opt.label === current.label
+    ) {
+      onClose()
+      return
+    }
+    const place = updatePlaceInfo(stop.placeId, {
+      type: opt.type,
+      typecode: opt.typecode,
+    })
+    if (!place) {
+      Taro.showToast({ title: '设置失败', icon: 'none' })
+      return
+    }
+    onPicked()
+  }
+
+  return (
+    <View
+      className={`trip-stop-edit${shown ? ' trip-stop-edit--open' : ''}`}
+      catchMove
+    >
+      <View className='trip-stop-edit__mask' onClick={onClose} />
+      <View className='trip-stop-edit__panel'>
+        <View className='trip-stop-edit__head'>
+          <Text className='trip-stop-edit__title'>选择类型</Text>
+          <Text className='trip-stop-edit__close' onClick={onClose}>
+            关闭
+          </Text>
+        </View>
+        <ScrollView scrollY className='trip-stop-edit__body' enhanced>
+          <View className='type-grid'>
+            {PLACE_TYPE_OPTIONS.map((opt) => {
+              const on =
+                opt.typecode === current.typecode &&
+                opt.label === current.label
+              const Icon = opt.mark.icon
+              return (
+                <View
+                  key={`${opt.typecode}-${opt.label}`}
+                  className={`type-grid__item${
+                    on ? ' type-grid__item--on' : ''
+                  }`}
+                  onClick={() => pick(opt)}
+                >
+                  <View
+                    className='type-grid__icon'
+                    style={{
+                      backgroundColor: lightenColor(opt.mark.color),
+                    }}
+                  >
+                    <Icon size={18} color={opt.mark.color} />
+                  </View>
+                  <Text className='type-grid__label'>{opt.label}</Text>
+                </View>
+              )
+            })}
+          </View>
+        </ScrollView>
+      </View>
     </View>
   )
 }

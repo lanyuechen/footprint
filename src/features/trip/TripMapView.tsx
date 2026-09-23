@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   SheetMapFrame,
   sheetHeightPx,
+  useRemountSelectedMarker,
   useSheetDrag,
   useSheetMapCamera,
   type SheetPos,
@@ -11,7 +12,6 @@ import {
 import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
 import { removePlanDay, reorderPlanDays, setPlanDayCount } from '../../services/storage'
 import type { SortGroup } from './GroupedSortList'
-import { markerIconPath } from './place-axis'
 import { buildTripDays, previewNextTripDay } from './trip-days'
 import {
   TripAddHeader,
@@ -21,16 +21,38 @@ import {
 import {
   TripBrowseHeader,
   TripBrowseList,
+  TripNoteEditSheet,
+  TripTypePickSheet,
   type TripStopView,
 } from './panels/TripBrowsePanel'
 import { TripDayTabs } from './panels/TripDayTabs'
 import { TripStopEditSheet } from './panels/TripStopEditSheet'
 import { useTripPlacePick } from './panels/useTripPlacePick'
+import {
+  keyNodeSegmentsToDistanceMarkers,
+  keyNodeSegmentsToPolylines,
+  planKeyNodeRouteSegments,
+  type KeyNodeRouteSegment,
+} from './key-node-routes'
+import {
+  NUMBERED_DOT_DISPLAY_SIZE,
+  NUMBERED_DOT_FALLBACK,
+  NUMBERED_DOT_PRELOAD_COUNT,
+  NUMBERED_DOT_SELECTED_SIZE,
+  ensureNumberedDotMarkersRange,
+  getNumberedDotMarkerPath,
+  preloadNumberedDotMarkers,
+} from './numbered-dot-markers'
+import { placeMarkerCallout } from './marker-callout'
 
 type TripMapViewProps = {
   plan: TravelPlan
   places: CollectedPlace[]
   stops: TripStop[]
+  /** 是否绘制关键节点路径 */
+  showRoutes?: boolean
+  /** 是否展示路径距离气泡（需同时开启路径） */
+  showRouteTips?: boolean
   onReorderGroups: (groups: SortGroup<TripStopView>[]) => void
   onRemoveStop: (stopId: string) => void
   onTripChanged?: () => void
@@ -39,23 +61,21 @@ type TripMapViewProps = {
 const TRIP_MAP_ID = 'trip-map'
 /** 底部档：把手 + 日期卡 + 「n 个行程」摘要 + 少量 padding，不露出添加按钮 */
 const TRIP_SHEET_BOTTOM_RPX = 156
-const MARKER_CANVAS = { width: 1424, height: 1444 }
-const MARKER_ANCHOR = { x: 0.5, y: (1018.56 + 200) / MARKER_CANVAS.height }
 
 function tripSheetHeightPx(pos: SheetPos): number {
   return sheetHeightPx(pos, { bottomRpx: TRIP_SHEET_BOTTOM_RPX })
 }
 
-function placeMarkerIcon(
-  place: CollectedPlace['place'],
-  selected: boolean,
-) {
-  const width = selected ? 58 : 50
+/** 圆形编号点：锚点为图片中心 */
+function numberedDotMarker(selected: boolean, iconPath: string) {
+  const size = selected
+    ? NUMBERED_DOT_SELECTED_SIZE
+    : NUMBERED_DOT_DISPLAY_SIZE
   return {
-    iconPath: markerIconPath(place),
-    width,
-    height: Math.round((width * MARKER_CANVAS.height) / MARKER_CANVAS.width),
-    anchor: MARKER_ANCHOR,
+    iconPath,
+    width: size,
+    height: size,
+    anchor: { x: 0.5, y: 0.5 },
   }
 }
 
@@ -75,6 +95,8 @@ export function TripMapView({
   plan,
   places,
   stops,
+  showRoutes = true,
+  showRouteTips = true,
   onReorderGroups,
   onRemoveStop,
   onTripChanged,
@@ -92,10 +114,31 @@ export function TripMapView({
   const [sheetPos, setSheetPos] = useState<SheetPos>('top')
   const [adding, setAdding] = useState(false)
   const [editingStop, setEditingStop] = useState<TripStopView | null>(null)
+  const [typePickerStop, setTypePickerStop] = useState<TripStopView | null>(
+    null,
+  )
+  const [notePickerStop, setNotePickerStop] = useState<TripStopView | null>(
+    null,
+  )
   const [selectedStopId, setSelectedStopId] = useState('')
   const [listScrollId, setListScrollId] = useState('')
   const [listScrollSeq, setListScrollSeq] = useState(0)
+  const [dotIconTick, setDotIconTick] = useState(0)
   const listScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const refreshDotIcons = useCallback(() => {
+    setDotIconTick((n) => n + 1)
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void preloadNumberedDotMarkers(NUMBERED_DOT_PRELOAD_COUNT).then(() => {
+      if (!cancelled) refreshDotIcons()
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [plan.id, refreshDotIcons])
 
   const selectedDay =
     days.find((d) => String(d.dayIndex) === dayKey) || days[0] || null
@@ -109,6 +152,21 @@ export function TripMapView({
         .join('|'),
     [mapStops],
   )
+
+  useEffect(() => {
+    const need = mapStops.length
+    if (need <= NUMBERED_DOT_PRELOAD_COUNT) return
+    let cancelled = false
+    void ensureNumberedDotMarkersRange(
+      NUMBERED_DOT_PRELOAD_COUNT + 1,
+      need,
+    ).then(() => {
+      if (!cancelled) refreshDotIcons()
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [mapStops.length, refreshDotIcons])
 
   const sortGroups: SortGroup<TripStopView>[] = useMemo(() => {
     if (!selectedDay) return []
@@ -258,6 +316,7 @@ export function TripMapView({
 
   const mapStopsSetKeyRef = useRef(mapStopsSetKey)
   const skipNextFit = useRef(true)
+  const prevSheetPosRef = useRef(sheetPos)
 
   useEffect(() => {
     if (adding) return
@@ -281,12 +340,37 @@ export function TripMapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapStopsSetKey, adding])
 
+  /** 从顶栏收起露出地图时，按当日点重新 fit（首屏 top 时地图高度≈0） */
+  useEffect(() => {
+    const prev = prevSheetPosRef.current
+    prevSheetPosRef.current = sheetPos
+    if (adding) return
+    if (prev !== 'top' || sheetPos === 'top') return
+    if (mapStops.length === 0) return
+    const timer = setTimeout(() => {
+      camera.fitToPoints(
+        mapStops.map((s) => ({
+          latitude: s.place.latitude,
+          longitude: s.place.longitude,
+        })),
+        { animate: true },
+      )
+    }, 80)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetPos, adding, mapStopsSetKey])
+
   const browseMarkers = useMemo(() => {
+    // dotIconTick：动态图生成完成后触发刷新
+    void dotIconTick
     return mapStops.map((stop, index) => {
       const selected = stop.id === selectedStopId
-      const icon = placeMarkerIcon(stop.place, selected)
+      const num = index + 1
+      const iconPath =
+        getNumberedDotMarkerPath(num) || NUMBERED_DOT_FALLBACK
+      const icon = numberedDotMarker(selected, iconPath)
       return {
-        id: index + 1,
+        id: num,
         latitude: stop.place.latitude,
         longitude: stop.place.longitude,
         width: icon.width,
@@ -295,9 +379,59 @@ export function TripMapView({
         anchor: icon.anchor,
         zIndex: selected ? 20 : 10,
         ariaLabel: stop.place.name,
+        ...(selected ? { callout: placeMarkerCallout(stop.place) } : {}),
       }
     })
-  }, [mapStops, selectedStopId])
+  }, [mapStops, selectedStopId, dotIconTick])
+
+  const keyRouteSig = useMemo(() => {
+    return dayStops
+      .filter((s) => s.isKeyNode)
+      .map(
+        (s) =>
+          `${s.id}:${s.travelMode || 'walking'}:${s.place.latitude.toFixed(5)},${s.place.longitude.toFixed(5)}`,
+      )
+      .join('|')
+  }, [dayStops])
+
+  const [routeSegments, setRouteSegments] = useState<KeyNodeRouteSegment[]>(
+    [],
+  )
+
+  useEffect(() => {
+    if (!showRoutes || adding || !keyRouteSig) {
+      setRouteSegments([])
+      return
+    }
+    const signal = { cancelled: false }
+    void planKeyNodeRouteSegments(dayStops, signal).then((segments) => {
+      if (signal.cancelled) return
+      setRouteSegments(segments)
+    })
+    return () => {
+      signal.cancelled = true
+    }
+    // dayStops 由 keyRouteSig 代表
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showRoutes, adding, keyRouteSig])
+
+  const routePolylines = useMemo(
+    () => keyNodeSegmentsToPolylines(routeSegments),
+    [routeSegments],
+  )
+
+  const routeDistanceMarkers = useMemo(
+    () => keyNodeSegmentsToDistanceMarkers(routeSegments),
+    [routeSegments],
+  )
+
+  const routeDistanceByToStopId = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const seg of routeSegments) {
+      if (seg.distanceMeters > 0) map[seg.toStopId] = seg.distanceMeters
+    }
+    return map
+  }, [routeSegments])
 
   const markerStopById = useMemo(() => {
     const map = new Map<number, TripStopView>()
@@ -377,6 +511,36 @@ export function TripMapView({
     .join(' ')
 
   const markers = adding ? placePick.markers : browseMarkers
+  const selectedMarkerId = useMemo(() => {
+    if (adding) return placePick.selectedMarkerId
+    if (!selectedStopId) return null
+    const idx = mapStops.findIndex((s) => s.id === selectedStopId)
+    return idx >= 0 ? idx + 1 : null
+  }, [adding, placePick.selectedMarkerId, selectedStopId, mapStops])
+  const remountedMarkers = useRemountSelectedMarker(
+    markers as Array<Record<string, unknown>>,
+    selectedMarkerId,
+  )
+  const displayMarkers = useMemo(() => {
+    if (
+      adding ||
+      !showRoutes ||
+      !showRouteTips ||
+      routeDistanceMarkers.length === 0
+    ) {
+      return remountedMarkers
+    }
+    return [
+      ...remountedMarkers,
+      ...(routeDistanceMarkers as Array<Record<string, unknown>>),
+    ]
+  }, [
+    adding,
+    showRoutes,
+    showRouteTips,
+    remountedMarkers,
+    routeDistanceMarkers,
+  ])
   const activeDayKey =
     selectedDay != null ? String(selectedDay.dayIndex) : dayKey
 
@@ -387,7 +551,12 @@ export function TripMapView({
         camera={camera}
         sheet={sheet}
         sheetPos={sheetPos}
-        markers={markers as Array<Record<string, unknown>>}
+        markers={displayMarkers}
+        polyline={
+          adding || !showRoutes
+            ? undefined
+            : (routePolylines as Array<Record<string, unknown>>)
+        }
         className='trip-map__stage'
         mapClassName='map-stage__map'
         sheetClassName={sheetClass}
@@ -462,9 +631,7 @@ export function TripMapView({
               canRemoveDay={Math.max(1, plan.dayCount || 1) > 1}
               onItemClick={(id) => {
                 const stop = dayStops.find((s) => s.id === id)
-                if (!stop) return
-                focusStop(stop)
-                setSheetPos('middle')
+                if (stop) focusStop(stop)
               }}
               onDragStart={() => {
                 setSelectedStopId('')
@@ -472,6 +639,8 @@ export function TripMapView({
               }}
               onChange={handleSortChange}
               onEditStop={(stop) => {
+                setTypePickerStop(null)
+                setNotePickerStop(null)
                 setSelectedStopId(stop.id)
                 setEditingStop(stop)
               }}
@@ -479,7 +648,22 @@ export function TripMapView({
                 onRemoveStop(stopId)
                 setSelectedStopId('')
               }}
+              onPickType={(stop) => {
+                setEditingStop(null)
+                setNotePickerStop(null)
+                setSelectedStopId(stop.id)
+                setTypePickerStop(stop)
+              }}
+              onPickNote={(stop) => {
+                setEditingStop(null)
+                setTypePickerStop(null)
+                setSelectedStopId(stop.id)
+                setNotePickerStop(stop)
+              }}
+              onStopUpdated={() => onTripChanged?.()}
               onRemoveDay={handleRemoveDay}
+              routeDistanceByToStopId={routeDistanceByToStopId}
+              quickEditEnabled={sheetPos === 'top'}
             />
           )
         }
@@ -500,6 +684,24 @@ export function TripMapView({
           setEditingStop(null)
           setDayKey(String(dayIndex))
           setSelectedStopId(stopId)
+          onTripChanged?.()
+        }}
+      />
+      <TripTypePickSheet
+        open={typePickerStop != null}
+        stop={typePickerStop}
+        onClose={() => setTypePickerStop(null)}
+        onPicked={() => {
+          setTypePickerStop(null)
+          onTripChanged?.()
+        }}
+      />
+      <TripNoteEditSheet
+        open={notePickerStop != null}
+        stop={notePickerStop}
+        onClose={() => setNotePickerStop(null)}
+        onSaved={() => {
+          setNotePickerStop(null)
           onTripChanged?.()
         }}
       />

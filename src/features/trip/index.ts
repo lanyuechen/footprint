@@ -7,3 +7,4 @@ export {
 } from './place-type-filter'
 export { buildTripDays } from './trip-days'
 export type { TripDay, TripYear } from './trip-days'
+export { preloadNumberedDotMarkers } from './numbered-dot-markers'

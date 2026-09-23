@@ -25,7 +25,7 @@ import { Utensils } from 'lucide-react-taro/icons/utensils'
 import { Wrench } from 'lucide-react-taro/icons/wrench'
 
 type AxisIcon = typeof MapPin
-/** 针脚文件名，对应 src/assets/markers。新增后运行 npm run markers 出图 */
+/** 针脚逻辑名（类型筛选 key 等）；地图点位已改用动态编号圆点 */
 export type AxisMark = { icon: AxisIcon; color: string; marker: string }
 
 const AXIS_DEFAULT: AxisMark = { icon: MapPin, color: '#1a5f4a', marker: 'map-pin' }
@@ -147,9 +147,4 @@ export function placeAxisMark(place: PlaceInfo): AxisMark {
   if (/风景|景点|名胜/.test(type)) return PLACE_MAJOR_MARKS['11']
   if (/政府/.test(type)) return PLACE_MAJOR_MARKS['13']
   return AXIS_DEFAULT
-}
-
-/** 小程序包内路径。文件由 copy 拷到 dist/assets/markers */
-export function markerIconPath(place: PlaceInfo) {
-  return `/assets/markers/${placeAxisMark(place).marker}.png`
 }

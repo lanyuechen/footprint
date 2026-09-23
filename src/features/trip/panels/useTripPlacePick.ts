@@ -15,20 +15,29 @@ import {
   nearlySameCoord,
 } from '../../../components/sheet-map'
 import { isSamePlace } from '../place-info'
-import { markerIconPath } from '../place-axis'
+import {
+  NUMBERED_DOT_DISPLAY_SIZE,
+  NUMBERED_DOT_FALLBACK,
+  NUMBERED_DOT_PRELOAD_COUNT,
+  NUMBERED_DOT_SELECTED_SIZE,
+  ensureNumberedDotMarker,
+  ensureNumberedDotMarkersRange,
+  getNumberedDotMarkerPath,
+  preloadNumberedDotMarkers,
+} from '../numbered-dot-markers'
+import { placeMarkerCallout } from '../marker-callout'
 
 type FocusCoord = { latitude: number; longitude: number }
 
-const MARKER_CANVAS = { width: 1424, height: 1444 }
-const MARKER_ANCHOR = { x: 0.5, y: (1018.56 + 200) / MARKER_CANVAS.height }
-
-function placeMarkerIcon(place: PlaceInfo, selected: boolean) {
-  const width = selected ? 58 : 50
+function numberedDotIcon(num: number, selected: boolean) {
+  const size = selected
+    ? NUMBERED_DOT_SELECTED_SIZE
+    : NUMBERED_DOT_DISPLAY_SIZE
   return {
-    iconPath: markerIconPath(place),
-    width,
-    height: Math.round((width * MARKER_CANVAS.height) / MARKER_CANVAS.width),
-    anchor: MARKER_ANCHOR,
+    iconPath: getNumberedDotMarkerPath(num) || NUMBERED_DOT_FALLBACK,
+    width: size,
+    height: size,
+    anchor: { x: 0.5, y: 0.5 },
   }
 }
 
@@ -82,6 +91,21 @@ export function useTripPlacePick({
   onFocusMapRef.current = onFocusMap
   const favoriteIdSet = useMemo(() => new Set(favoriteIds), [favoriteIds])
   const favRemoveSet = useMemo(() => new Set(favRemoveIds), [favRemoveIds])
+  const [dotIconTick, setDotIconTick] = useState(0)
+
+  const refreshDotIcons = useCallback(() => {
+    setDotIconTick((n) => n + 1)
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void preloadNumberedDotMarkers().then(() => {
+      if (!cancelled) refreshDotIcons()
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [refreshDotIcons])
 
   useEffect(() => {
     let cancelled = false
@@ -391,10 +415,12 @@ export function useTripPlacePick({
   }, [])
 
   const markers = useMemo(() => {
-    const list = places.map((p, index) => {
+    void dotIconTick
+    const list = favoritePlaces.map((p, index) => {
+      const num = index + 1
       const selected =
         selectedPlace != null && isSamePlace(p.place, selectedPlace)
-      const icon = placeMarkerIcon(p.place, selected)
+      const icon = numberedDotIcon(num, selected)
       return {
         id: index + 1,
         latitude: p.place.latitude,
@@ -405,29 +431,83 @@ export function useTripPlacePick({
         anchor: icon.anchor,
         zIndex: selected ? 20 : 10,
         ariaLabel: p.place.name,
+        ...(selected ? { callout: placeMarkerCallout(p.place) } : {}),
       }
     })
-    if (
+
+    const extraPlace =
       pinnedSearchPlace &&
-      !places.some((p) => isSamePlace(p.place, pinnedSearchPlace))
-    ) {
-      const selected =
-        selectedPlace != null && isSamePlace(pinnedSearchPlace, selectedPlace)
-      const icon = placeMarkerIcon(pinnedSearchPlace, selected)
+      !favoritePlaces.some((p) => isSamePlace(p.place, pinnedSearchPlace))
+        ? pinnedSearchPlace
+        : null
+
+    if (extraPlace) {
+      const searchIdx = results.findIndex((r) => isSamePlace(r, extraPlace))
+      /** 搜索结果用列表序号；纯地图选点对应「选中地点」为 1 */
+      const num = searchIdx >= 0 ? searchIdx + 1 : 1
+      const icon = numberedDotIcon(num, true)
       list.push({
         id: MARKER_ID_SEARCH,
-        latitude: pinnedSearchPlace.latitude,
-        longitude: pinnedSearchPlace.longitude,
+        latitude: extraPlace.latitude,
+        longitude: extraPlace.longitude,
         width: icon.width,
         height: icon.height,
         iconPath: icon.iconPath,
         anchor: icon.anchor,
         zIndex: 30,
-        ariaLabel: pinnedSearchPlace.name,
+        ariaLabel: extraPlace.name,
+        callout: placeMarkerCallout(extraPlace),
       })
     }
     return list
-  }, [places, pinnedSearchPlace, selectedPlace])
+  }, [
+    favoritePlaces,
+    pinnedSearchPlace,
+    selectedPlace,
+    results,
+    dotIconTick,
+  ])
+
+  const selectedMarkerId = useMemo(() => {
+    const extraPlace =
+      pinnedSearchPlace &&
+      !favoritePlaces.some((p) => isSamePlace(p.place, pinnedSearchPlace))
+        ? pinnedSearchPlace
+        : null
+    if (extraPlace) return MARKER_ID_SEARCH
+    if (!selectedPlace) return null
+    const idx = favoritePlaces.findIndex((p) =>
+      isSamePlace(p.place, selectedPlace),
+    )
+    return idx >= 0 ? idx + 1 : null
+  }, [favoritePlaces, pinnedSearchPlace, selectedPlace])
+
+  useEffect(() => {
+    const nums: number[] = []
+    for (let i = 1; i <= favoritePlaces.length; i++) nums.push(i)
+    if (
+      pinnedSearchPlace &&
+      !favoritePlaces.some((p) => isSamePlace(p.place, pinnedSearchPlace))
+    ) {
+      const searchIdx = results.findIndex((r) =>
+        isSamePlace(r, pinnedSearchPlace),
+      )
+      nums.push(searchIdx >= 0 ? searchIdx + 1 : 1)
+    }
+    const maxNum = nums.reduce((m, n) => Math.max(m, n), 0)
+    if (maxNum <= 0) return
+    let cancelled = false
+    const run =
+      maxNum <= NUMBERED_DOT_PRELOAD_COUNT
+        ? Promise.all(nums.map((n) => ensureNumberedDotMarker(n).catch(() => null)))
+        : ensureNumberedDotMarkersRange(1, maxNum)
+    void run.then(() => {
+      if (!cancelled) refreshDotIcons()
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [favoritePlaces, pinnedSearchPlace, results, refreshDotIcons])
 
   const onMarkerTap = useCallback(
     (markerId: number) => {
@@ -435,10 +515,10 @@ export function useTripPlacePick({
         selectPlace(pinnedSearchPlace, 'list')
         return
       }
-      const point = places[markerId - 1]
+      const point = favoritePlaces[markerId - 1]
       if (point) toggleCollectedPick(point)
     },
-    [pinnedSearchPlace, places, selectPlace, toggleCollectedPick],
+    [pinnedSearchPlace, favoritePlaces, selectPlace, toggleCollectedPick],
   )
 
   return {
@@ -461,6 +541,7 @@ export function useTripPlacePick({
     onMapPoiTap,
     onMarkerTap,
     markers,
+    selectedMarkerId,
     confirm,
     reset,
   }

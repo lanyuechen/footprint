@@ -3,18 +3,15 @@ export {
   DEFAULT_CENTER,
   SEARCH_DEBOUNCE_MS,
   MARKER_ID_SEARCH,
+  MARKER_ID_ROUTE_DIST,
   DEFAULT_SHEET_BOTTOM_RPX,
   DEFAULT_SHEET_MIDDLE_VH,
   MAP_CENTER_EASE_MS,
   getWindowMetrics,
   sheetHeightPx,
-  coverRatioFromSheetHeight,
-  easeOutCubic,
+  mapHeightFromSheet,
+  mapShiftYFromSheet,
   nearlySameCoord,
-  estimateMapLatSpan,
-  readLatSpanFromRegion,
-  offsetCenterForSheet,
-  reverseOffsetCenterForSheet,
   fitMapToPoints,
 } from './map-geometry'
 export type { SheetHeightOptions } from './map-geometry'
@@ -25,6 +22,7 @@ export type {
   UseSheetMapCameraOptions,
   UseSheetMapCameraResult,
 } from './useSheetMapCamera'
+export { useRemountSelectedMarker } from './useRemountSelectedMarker'
 export { useSheetDrag } from './useSheetDrag'
 export type { UseSheetDragOptions, UseSheetDragResult } from './useSheetDrag'
 export { SheetMapFrame } from './SheetMapFrame'

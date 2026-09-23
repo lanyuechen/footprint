@@ -1,16 +1,14 @@
 import Taro from '@tarojs/taro'
-import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { useEffect, useRef, useState, type MutableRefObject } from 'react'
 import {
-  coverRatioFromSheetHeight,
   DEFAULT_CENTER,
+  DEFAULT_SHEET_MIDDLE_VH,
   easeOutCubic,
-  estimateMapLatSpan,
   fitMapToPoints,
+  getWindowMetrics,
+  mapHeightFromSheet,
   MAP_CENTER_EASE_MS,
   nearlySameCoord,
-  offsetCenterForSheet,
-  readLatSpanFromRegion,
-  reverseOffsetCenterForSheet,
 } from './map-geometry'
 import type { MapCoord, MapRegionChangeEvent } from './types'
 
@@ -25,37 +23,34 @@ type ViewportOpts = {
   animate?: boolean
 }
 
+/** 底栏几乎全屏时可视高度≈0，fit 按 middle 可视高度算 */
+function visibleHeightForFit(sheetHeightPx: number): number {
+  const visibleH = mapHeightFromSheet(sheetHeightPx)
+  const { windowHeight } = getWindowMetrics()
+  const middleVisibleH = mapHeightFromSheet(
+    windowHeight * DEFAULT_SHEET_MIDDLE_VH,
+  )
+  if (visibleH < middleVisibleH * 0.5) return middleVisibleH
+  return visibleH
+}
+
 function resolveSeedViewport(
   points: MapCoord[] | undefined,
   sheetHeightPx: number,
-): { focus: MapCoord; scale: number; span: number; center: MapCoord } {
-  const cover = coverRatioFromSheetHeight(sheetHeightPx)
+): { center: MapCoord; scale: number } {
+  const visibleH = visibleHeightForFit(sheetHeightPx)
   if (!points || points.length === 0) {
-    const focus = { ...DEFAULT_CENTER }
-    const scale = 12
-    const span = estimateMapLatSpan(scale, focus.latitude)
-    return {
-      focus,
-      scale,
-      span,
-      center: offsetCenterForSheet(focus, cover, span),
-    }
+    return { center: { ...DEFAULT_CENTER }, scale: 12 }
   }
-  const fitted = fitMapToPoints(points, cover)
-  const span = estimateMapLatSpan(fitted.scale, fitted.center.latitude)
-  return {
-    focus: fitted.center,
-    scale: fitted.scale,
-    span,
-    center: offsetCenterForSheet(fitted.center, cover, span),
-  }
+  const fitted = fitMapToPoints(points, visibleH)
+  return { center: fitted.center, scale: fitted.scale }
 }
 
 export type UseSheetMapCameraOptions = {
   mapId: string
-  /** 当前底栏高度（拖拽中或吸附档位） */
+  /** 当前底栏高度；用于可视区 fit，不改变地图组件尺寸 */
   sheetHeightPx: number
-  /** 拖底栏中：中心跟手、不做缓动 */
+  /** 拖底栏中：不做中心缓动 */
   sheetDragging: boolean
   /** 仅首屏种子视野，避免先闪默认中心再 fit */
   seedPoints?: MapCoord[]
@@ -64,23 +59,20 @@ export type UseSheetMapCameraOptions = {
 export type UseSheetMapCameraResult = {
   mapCenter: MapCoord
   mapScale: number
+  /** 与 mapCenter 目标一致；缓动过程中可能短暂不同 */
   focusCoord: MapCoord
-  sheetCoverRatio: number
   gesturingRef: MutableRefObject<boolean>
-  applyFocusViewport: (
-    focus: MapCoord,
-    scale: number,
-    opts?: ViewportOpts,
-  ) => void
   fitToPoints: (points: MapCoord[], opts?: ViewportOpts) => void
   setFocusCoord: (coord: MapCoord) => void
-  rememberLatSpan: (span: number | null | undefined) => void
   beginOwnMapMove: () => void
   endOwnMapMove: () => void
-  isOwnMapMove: () => boolean
   onRegionChange: (e: MapRegionChangeEvent) => void
 }
 
+/**
+ * 地图组件固定全屏；焦点经纬度 = 地图中心。
+ * 可视区对齐由 SheetMapFrame 的 translateY 完成。
+ */
 export function useSheetMapCamera(
   options: UseSheetMapCameraOptions,
 ): UseSheetMapCameraResult {
@@ -90,17 +82,15 @@ export function useSheetMapCamera(
     resolveSeedViewport(options.seedPoints, options.sheetHeightPx),
   )
 
-  const [focusCoord, setFocusCoordState] = useState(seedRef.current.focus)
-  const [mapScale, setMapScale] = useState(seedRef.current.scale)
-  const [mapViewLatSpan, setMapViewLatSpan] = useState(seedRef.current.span)
   const [mapCenter, setMapCenter] = useState(seedRef.current.center)
+  const [focusCoord, setFocusCoordState] = useState(seedRef.current.center)
+  const [mapScale, setMapScale] = useState(seedRef.current.scale)
 
   const gesturingRef = useRef(false)
   const mapCenterDisplayRef = useRef(seedRef.current.center)
   const mapCenterAnimRaf = useRef<number | null>(null)
-  const mapViewLatSpanRef = useRef(seedRef.current.span)
   const mapScaleRef = useRef(seedRef.current.scale)
-  const sheetCoverRatioRef = useRef(0.12)
+  const sheetHRef = useRef(sheetH)
   const suppressCenterFollowRef = useRef(false)
   const ownMapMoveRef = useRef(false)
   const ignoreMapRegionRef = useRef(false)
@@ -109,21 +99,8 @@ export function useSheetMapCamera(
   )
   const sheetDraggingRef = useRef(sheetDragging)
   sheetDraggingRef.current = sheetDragging
-
-  const sheetCoverRatio = coverRatioFromSheetHeight(sheetH)
-  sheetCoverRatioRef.current = sheetCoverRatio
+  sheetHRef.current = sheetH
   mapScaleRef.current = mapScale
-  mapViewLatSpanRef.current = mapViewLatSpan
-
-  const effectiveLatSpan =
-    mapViewLatSpan > 0
-      ? mapViewLatSpan
-      : estimateMapLatSpan(mapScale, focusCoord.latitude)
-
-  const targetMapCenter = useMemo(
-    () => offsetCenterForSheet(focusCoord, sheetCoverRatio, effectiveLatSpan),
-    [focusCoord, sheetCoverRatio, effectiveLatSpan],
-  )
 
   const clearIgnoreMapRegion = () => {
     if (ignoreMapRegionTimer.current) {
@@ -159,10 +136,11 @@ export function useSheetMapCamera(
     armIgnoreMapRegion(opts?.animate ? MAP_CENTER_EASE_MS + 40 : 80)
   }
 
+  // 焦点变更时驱动地图中心
   useEffect(() => {
     if (gesturingRef.current) return
 
-    const to = targetMapCenter
+    const to = focusCoord
     const from = mapCenterDisplayRef.current
 
     if (suppressCenterFollowRef.current) {
@@ -213,7 +191,7 @@ export function useSheetMapCamera(
       cancelMapCenterAnim()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetMapCenter, sheetDragging])
+  }, [focusCoord, sheetDragging])
 
   useEffect(() => {
     return () => {
@@ -222,26 +200,6 @@ export function useSheetMapCamera(
     }
   }, [])
 
-  const rememberLatSpan = (
-    span: number | null | undefined,
-    opts?: { quiet?: boolean },
-  ) => {
-    if (span == null || !(span > 0)) return
-    const prev = mapViewLatSpanRef.current
-    mapViewLatSpanRef.current = span
-    if (Math.abs(prev - span) < 1e-10) return
-    // 程序改视野期间：只写入 ref，避免跨度回写触发中心再跳一次
-    if (
-      opts?.quiet ||
-      ignoreMapRegionRef.current ||
-      ownMapMoveRef.current ||
-      mapCenterAnimRaf.current != null
-    ) {
-      return
-    }
-    setMapViewLatSpan(span)
-  }
-
   const applyFocusViewport = (
     focus: MapCoord,
     scale: number,
@@ -249,33 +207,27 @@ export function useSheetMapCamera(
   ) => {
     const animate = opts?.animate !== false
     const nextScale = Math.min(20, Math.max(3, Math.round(scale)))
-    const span = estimateMapLatSpan(nextScale, focus.latitude)
-    mapViewLatSpanRef.current = span
-    setMapViewLatSpan(span)
-    setFocusCoordState(focus)
     gesturingRef.current = false
     mapScaleRef.current = nextScale
     setMapScale(nextScale)
+    setFocusCoordState(focus)
 
     if (!animate) {
-      const center = offsetCenterForSheet(
-        focus,
-        sheetCoverRatioRef.current,
-        span,
-      )
       suppressCenterFollowRef.current = true
-      applyMapCenter(center)
+      applyMapCenter(focus)
     }
   }
 
   const fitToPoints = (points: MapCoord[], opts?: ViewportOpts) => {
-    const cover = sheetCoverRatioRef.current
     const animate = opts?.animate !== false
     if (points.length === 0) {
       applyFocusViewport(DEFAULT_CENTER, 12, { animate })
       return
     }
-    const fitted = fitMapToPoints(points, cover)
+    const fitted = fitMapToPoints(
+      points,
+      visibleHeightForFit(sheetHRef.current),
+    )
     applyFocusViewport(fitted.center, fitted.scale, { animate })
   }
 
@@ -291,30 +243,16 @@ export function useSheetMapCamera(
     ownMapMoveRef.current = false
   }
 
-  const isOwnMapMove = () => ownMapMoveRef.current
-
   const syncMapCenterFromUser = (
     center: MapCoord | null,
     scaleRaw?: number,
   ) => {
     gesturingRef.current = false
     if (center) {
-      const latSpan =
-        mapViewLatSpanRef.current > 0
-          ? mapViewLatSpanRef.current
-          : estimateMapLatSpan(
-              scaleRaw ?? mapScaleRef.current,
-              center.latitude,
-            )
-      const anchor = reverseOffsetCenterForSheet(
-        center,
-        sheetCoverRatioRef.current,
-        latSpan,
-      )
       suppressCenterFollowRef.current = true
       mapCenterDisplayRef.current = center
       setMapCenter(center)
-      setFocusCoordState(anchor)
+      setFocusCoordState(center)
     }
     if (scaleRaw != null && Number.isFinite(scaleRaw)) {
       const next = Math.min(20, Math.max(3, Math.round(scaleRaw)))
@@ -327,11 +265,6 @@ export function useSheetMapCamera(
     const detail = (e.detail || {}) as {
       type?: string
       causedBy?: string
-      region?: {
-        northeast?: { latitude: number; longitude: number }
-        southwest?: { latitude: number; longitude: number }
-        southeast?: { latitude: number; longitude: number }
-      }
       centerLocation?: MapCoord
       latitude?: number
       longitude?: number
@@ -350,23 +283,12 @@ export function useSheetMapCamera(
     }
     if (type !== 'end') return
 
-    const spanFromEvent = readLatSpanFromRegion(detail.region)
-    if (spanFromEvent) {
-      rememberLatSpan(spanFromEvent, {
-        quiet:
-          ignoreMapRegionRef.current ||
-          ownMapMoveRef.current ||
-          !isUserMapGesture(causedBy),
-      })
-    }
-
     const centerFromEvent =
       detail.centerLocation ||
       (detail.latitude != null && detail.longitude != null
         ? { latitude: detail.latitude, longitude: detail.longitude }
         : null)
 
-    // 用户手势结束
     if (
       gesturingRef.current ||
       (isUserMapGesture(causedBy) && !ownMapMoveRef.current)
@@ -414,7 +336,6 @@ export function useSheetMapCamera(
       return
     }
 
-    // 程序改中心/缩放：跨度已在上方 quiet 回写；不再二次改 focus
     if (
       ownMapMoveRef.current ||
       causedBy === 'update' ||
@@ -427,34 +348,21 @@ export function useSheetMapCamera(
     if (mapCenterAnimRaf.current != null) return
     if (!centerFromEvent) return
 
-    const latSpan =
-      spanFromEvent ||
-      mapViewLatSpanRef.current ||
-      estimateMapLatSpan(mapScaleRef.current, centerFromEvent.latitude)
-    const anchor = reverseOffsetCenterForSheet(
-      centerFromEvent,
-      sheetCoverRatioRef.current,
-      latSpan,
-    )
     suppressCenterFollowRef.current = true
     mapCenterDisplayRef.current = centerFromEvent
     setMapCenter(centerFromEvent)
-    setFocusCoordState(anchor)
+    setFocusCoordState(centerFromEvent)
   }
 
   return {
     mapCenter,
     mapScale,
     focusCoord,
-    sheetCoverRatio,
     gesturingRef,
-    applyFocusViewport,
     fitToPoints,
     setFocusCoord,
-    rememberLatSpan,
     beginOwnMapMove,
     endOwnMapMove,
-    isOwnMapMove,
     onRegionChange,
   }
 }

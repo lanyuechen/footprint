@@ -16,6 +16,10 @@ export const STORAGE_KEYS = {
   APP_DATA: 'footprint_app_data_v1',
   /** 导航页上次选择的出行方式 */
   LAST_NAV_MODE: 'footprint_last_nav_mode_v1',
+  /** 各计划类型筛选选中项 planId → typeKeys */
+  TYPE_FILTER_PREFS: 'footprint_type_filter_prefs_v1',
+  /** 各计划地图筛选（点/路径）planId → pref */
+  MAP_FILTER_PREFS: 'footprint_map_filter_prefs_v1',
 } as const
 
 export const DATA_VERSION = 4

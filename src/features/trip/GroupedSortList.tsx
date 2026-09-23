@@ -306,7 +306,8 @@ const ItemRow = memo(function ItemRow({
       }`}
       style={{
         transform: `translate3d(0, ${baseY}px, 0)`,
-        minHeight: `${height}px`,
+        // 拖拽占位需要固定高度；普通项随内容撑开，避免 minHeight 导致测高偏小、卡片重叠
+        ...(isActive ? { height: `${height}px` } : null),
         transition: isActive ? 'none' : transition,
         opacity: isActive ? 0 : 1,
       }}

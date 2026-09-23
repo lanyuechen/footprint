@@ -27,10 +27,20 @@ import {
 } from '../../services/amap'
 import { getPlace } from '../../services/storage'
 import { formatDistance, formatDuration } from '../../utils/datetime'
+import {
+  ensureLabeledDotMarker,
+  getLabeledDotMarkerPath,
+  NUMBERED_DOT_DISPLAY_SIZE,
+  NUMBERED_DOT_FALLBACK,
+} from '../../features/trip/numbered-dot-markers'
 import './index.scss'
 
 const NAV_MAP_ID = 'nav-route-map'
 const PANEL_BOTTOM_RPX = 300
+const NAV_MARKER_START = '起'
+const NAV_MARKER_END = '终'
+const NAV_START_STYLE = { fill: '#1a5f4a', stroke: '#ffffff' }
+const NAV_END_STYLE = { fill: '#c45c5c', stroke: '#ffffff' }
 
 const STEP_KIND_LABEL: Record<NavStepKind, string> = {
   walk: '步行',
@@ -62,6 +72,8 @@ function stepMetaText(step: {
 export default function NavPage() {
   const [destination, setDestination] = useState<PlaceInfo | null>(null)
   const [origin, setOrigin] = useState<UserLocation | null>(null)
+  const [originName, setOriginName] = useState('起点')
+  const [originFixed, setOriginFixed] = useState(false)
   const [mode, setMode] = useState<NavMode>(() => getLastNavMode())
   const [routes, setRoutes] = useState<NavRoute[]>([])
   const [schemeIndex, setSchemeIndex] = useState(0)
@@ -69,8 +81,25 @@ export default function NavPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [panelPos, setPanelPos] = useState<SheetPos>('middle')
+  const [endpointIconTick, setEndpointIconTick] = useState(0)
 
   const seqRef = useRef(0)
+  const originFixedRef = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all([
+      ensureLabeledDotMarker(NAV_MARKER_START, NAV_START_STYLE),
+      ensureLabeledDotMarker(NAV_MARKER_END, NAV_END_STYLE),
+    ])
+      .then(() => {
+        if (!cancelled) setEndpointIconTick((n) => n + 1)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const sheet = useSheetDrag({
     heightForPos: navPanelHeightPx,
@@ -86,25 +115,51 @@ export default function NavPage() {
 
   const route = routes[schemeIndex] || null
 
-  const applyViewport = (points: NavRoutePoint[]) => {
+  const endpointPoints = useMemo(() => {
+    const pts: Array<{ latitude: number; longitude: number }> = []
+    if (origin) {
+      pts.push({ latitude: origin.latitude, longitude: origin.longitude })
+    }
+    if (destination) {
+      pts.push({
+        latitude: destination.latitude,
+        longitude: destination.longitude,
+      })
+    }
+    return pts
+  }, [origin, destination])
+
+  const applyViewport = (
+    points: Array<{ latitude: number; longitude: number }>,
+    opts?: { animate?: boolean },
+  ) => {
     if (points.length === 0) return
+    const animate = opts?.animate === true
     camera.beginOwnMapMove()
-    camera.fitToPoints(points)
+    camera.fitToPoints(points, { animate })
     setTimeout(() => {
       camera.endOwnMapMove()
-    }, 320)
+    }, animate ? 320 : 80)
   }
 
-  const applyRouteView = (r: NavRoute, seq: number) => {
+  const applyRouteView = (r: NavRoute, seq: number, animate = false) => {
     setStepIndex(null)
+    const pts = [
+      ...endpointPoints,
+      ...(r.points || []).map((p) => ({
+        latitude: p.latitude,
+        longitude: p.longitude,
+      })),
+    ]
+    // 等底栏高度计入地图可视高度后再 fit
     setTimeout(() => {
       if (seq !== seqRef.current) return
-      applyViewport(r.points)
-    }, 60)
+      applyViewport(pts.length > 0 ? pts : r.points, { animate })
+    }, 80)
   }
 
   const applyStepView = (points: NavRoutePoint[]) => {
-    applyViewport(points)
+    applyViewport(points, { animate: true })
   }
 
   useLoad((options) => {
@@ -122,25 +177,60 @@ export default function NavPage() {
     }
     setDestination(place.place)
     Taro.setNavigationBarTitle({ title: place.place.name || '路线导航' })
+
+    const modeParam = String(options?.mode || '')
+    if (
+      modeParam === 'walking' ||
+      modeParam === 'riding' ||
+      modeParam === 'transit'
+    ) {
+      setMode(modeParam)
+      setLastNavMode(modeParam)
+    }
+
+    const fromLat = Number(options?.fromLat)
+    const fromLng = Number(options?.fromLng)
+    if (Number.isFinite(fromLat) && Number.isFinite(fromLng)) {
+      const nameRaw = options?.fromName
+      let name = '起点'
+      if (typeof nameRaw === 'string' && nameRaw.trim()) {
+        try {
+          name = decodeURIComponent(nameRaw)
+        } catch {
+          name = nameRaw
+        }
+      }
+      originFixedRef.current = true
+      setOriginFixed(true)
+      setOriginName(name)
+      setOrigin({ latitude: fromLat, longitude: fromLng })
+    }
   })
 
   useEffect(() => {
+    if (originFixedRef.current || originFixed) return
     let cancelled = false
     getUserLocation().then((loc) => {
-      if (cancelled) return
+      if (cancelled || originFixedRef.current) return
       if (!loc) {
         setError('无法获取当前位置，请开启定位权限后重试')
         setLoading(false)
         return
       }
       setOrigin(loc)
-      camera.applyFocusViewport(loc, camera.mapScale)
+      setOriginName('我的位置')
     })
     return () => {
       cancelled = true
     }
+  }, [originFixed])
+
+  /** 起终点就绪后先按两点适配（路线返回前的过渡视野） */
+  useEffect(() => {
+    if (endpointPoints.length < 1) return
+    applyViewport(endpointPoints, { animate: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [endpointPoints])
 
   useEffect(() => {
     if (!origin || !destination) return
@@ -161,13 +251,14 @@ export default function NavPage() {
         setRoutes(list)
         setSchemeIndex(0)
         setLoading(false)
-        if (list[0]) applyRouteView(list[0], seq)
+        if (list[0]) applyRouteView(list[0], seq, false)
       })
       .catch((err: unknown) => {
         if (seq !== seqRef.current) return
         const msg = err instanceof Error ? err.message : '路线规划失败'
         setError(msg)
         setLoading(false)
+        applyViewport(endpointPoints, { animate: false })
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [origin, destination, mode])
@@ -183,7 +274,7 @@ export default function NavPage() {
     const next = routes[index]
     if (!next) return
     setSchemeIndex(index)
-    applyRouteView(next, seqRef.current)
+    applyRouteView(next, seqRef.current, true)
   }
 
   const onSelectStep = (index: number) => {
@@ -191,7 +282,7 @@ export default function NavPage() {
     if (!step) return
     if (stepIndex === index) {
       setStepIndex(null)
-      if (route) applyRouteView(route, seqRef.current)
+      if (route) applyRouteView(route, seqRef.current, true)
       return
     }
     setStepIndex(index)
@@ -204,22 +295,56 @@ export default function NavPage() {
 
   const markers = useMemo(() => {
     if (!destination) return []
-    return [
-      {
-        id: 2,
-        latitude: destination.latitude,
-        longitude: destination.longitude,
-        title: '终点',
+    const startIcon =
+      getLabeledDotMarkerPath(NAV_MARKER_START, NAV_START_STYLE) ||
+      NUMBERED_DOT_FALLBACK
+    const endIcon =
+      getLabeledDotMarkerPath(NAV_MARKER_END, NAV_END_STYLE) ||
+      NUMBERED_DOT_FALLBACK
+    const size = NUMBERED_DOT_DISPLAY_SIZE
+    const list: Array<Record<string, unknown>> = []
+    if (origin) {
+      list.push({
+        id: 1,
+        latitude: origin.latitude,
+        longitude: origin.longitude,
+        width: size,
+        height: size,
+        iconPath: startIcon,
+        anchor: { x: 0.5, y: 0.5 },
+        zIndex: 12,
+        title: '起点',
         callout: {
-          content: destination.name,
+          content: originName,
           display: 'ALWAYS' as const,
           padding: 6,
           borderRadius: 6,
           fontSize: 12,
         },
+      })
+    }
+    list.push({
+      id: 2,
+      latitude: destination.latitude,
+      longitude: destination.longitude,
+      width: size,
+      height: size,
+      iconPath: endIcon,
+      anchor: { x: 0.5, y: 0.5 },
+      zIndex: 12,
+      title: '终点',
+      callout: {
+        content: destination.name,
+        display: 'ALWAYS' as const,
+        padding: 6,
+        borderRadius: 6,
+        fontSize: 12,
       },
-    ]
-  }, [destination])
+    })
+    return list
+    // endpointIconTick：图标异步生成后刷新
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [destination, origin, originName, endpointIconTick])
 
   const polyline = useMemo(() => {
     if (!route) return []
@@ -231,7 +356,7 @@ export default function NavPage() {
           color: step.color || NAV_STEP_COLORS[index % NAV_STEP_COLORS.length],
           width: 6,
           dottedLine: false,
-          arrowLine: false,
+          arrowLine: true,
         }
       })
       .filter((item): item is NonNullable<typeof item> => !!item)
@@ -245,7 +370,7 @@ export default function NavPage() {
         color: '#1a5f4a',
         width: 6,
         dottedLine: false,
-        arrowLine: false,
+        arrowLine: true,
       },
     ]
   }, [route])

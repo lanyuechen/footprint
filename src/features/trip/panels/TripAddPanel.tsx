@@ -161,19 +161,6 @@ export function TripAddList({
   const showMapPickedCard =
     !!mapPickedPlace && !mapPickedInCollected && !mapPickedInResults
 
-  const renderPickCheck = (place: PlaceInfo, onToggle: () => void) => {
-    const on = isPlacePicked(place)
-    return (
-      <View
-        className={`sheet-point__check${on ? ' sheet-point__check--on' : ''}`}
-        onClick={(e) => {
-          e.stopPropagation()
-          onToggle()
-        }}
-      />
-    )
-  }
-
   const renderFavBtn = (place: PlaceInfo) => {
     const on = isFavorited(place)
     return (
@@ -188,6 +175,16 @@ export function TripAddList({
       </View>
     )
   }
+
+  const renderIndex = (num: number, picked: boolean) => (
+    <Text
+      className={`sheet-point__index${
+        picked ? ' sheet-point__index--on' : ''
+      }`}
+    >
+      {num}
+    </Text>
+  )
 
   return (
     <ScrollView
@@ -204,12 +201,10 @@ export function TripAddList({
               className={`sheet-point ${
                 mapPickedActive ? 'sheet-point--active' : ''
               }${isPlacePicked(mapPickedPlace) ? ' sheet-point--picked' : ''}`}
-              onClick={() => onSelectPlace(mapPickedPlace, 'map')}
+              onClick={() => onTogglePick(mapPickedPlace)}
             >
               <View className='sheet-point__row'>
-                {renderPickCheck(mapPickedPlace, () =>
-                  onTogglePick(mapPickedPlace),
-                )}
+                {renderIndex(1, isPlacePicked(mapPickedPlace))}
                 <View className='sheet-point__body'>
                   <View className='sheet-point__name'>
                     {mapPickedPlace.name}
@@ -254,7 +249,7 @@ export function TripAddList({
                   onClick={() => onSelectPlace(item)}
                 >
                   <View className='sheet-point__row'>
-                    {renderPickCheck(item, () => onTogglePick(item))}
+                    {renderIndex(index + 1, isPlacePicked(item))}
                     <View className='sheet-point__body'>
                       <HighlightText
                         className='sheet-point__name'
@@ -286,7 +281,7 @@ export function TripAddList({
             暂无收藏，搜索或点地图选点后可加入行程
           </View>
         ) : (
-          places.map((point) => {
+          places.map((point, index) => {
             const active =
               !!selectedPlace && isSamePlace(point.place, selectedPlace)
             const picked = isPlacePicked(point.place)
@@ -299,9 +294,7 @@ export function TripAddList({
                 onClick={() => onToggleCollected(point)}
               >
                 <View className='sheet-point__row'>
-                  {renderPickCheck(point.place, () =>
-                    onToggleCollected(point),
-                  )}
+                  {renderIndex(index + 1, picked)}
                   <View className='sheet-point__body'>
                     <View className='sheet-point__name'>
                       {point.place.name}

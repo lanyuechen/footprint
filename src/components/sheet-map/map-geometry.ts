@@ -4,6 +4,8 @@ import type { SheetPos } from './types'
 export const DEFAULT_CENTER = { latitude: 39.908823, longitude: 116.39747 }
 export const SEARCH_DEBOUNCE_MS = 400
 export const MARKER_ID_SEARCH = 9000
+/** 关键节点路径距离标签 marker id 起点 */
+export const MARKER_ID_ROUTE_DIST = 9100
 
 export const DEFAULT_SHEET_BOTTOM_RPX = 168
 export const DEFAULT_SHEET_MIDDLE_VH = 0.52
@@ -36,10 +38,18 @@ export function sheetHeightPx(
   return (bottomRpx / 750) * windowWidth
 }
 
-export function coverRatioFromSheetHeight(heightPx: number): number {
+/** 底栏上方地图可视高度（fit / 估算跨度用；地图组件本身仍全屏） */
+export function mapHeightFromSheet(sheetHeightPx: number): number {
   const { windowHeight } = getWindowMetrics()
-  if (windowHeight <= 0) return 0.12
-  return Math.min(Math.max(heightPx / windowHeight, 0), 0.7)
+  return Math.max(windowHeight - Math.max(sheetHeightPx, 0), 1)
+}
+
+/**
+ * 全屏地图上移量：使地图几何中心对齐「底栏上方可视区」中心。
+ * translateY(-sheetHeight/2)
+ */
+export function mapShiftYFromSheet(sheetHeightPx: number): number {
+  return Math.max(sheetHeightPx, 0) / 2
 }
 
 export function easeOutCubic(t: number) {
@@ -57,72 +67,13 @@ export function nearlySameCoord(
 }
 
 /**
- * 估算当前缩放下地图纬度跨度（仅作 getRegion 前的回退）。
- */
-export function estimateMapLatSpan(
-  scale: number,
-  latitude: number,
-  mapHeightPx?: number,
-) {
-  const { windowHeight } = getWindowMetrics()
-  const height = Math.max(mapHeightPx ?? windowHeight, 1)
-  const zoom = Math.min(Math.max(scale, 3), 20)
-  const metersPerPixel =
-    (156543.03392804097 * Math.cos((latitude * Math.PI) / 180)) /
-    Math.pow(2, zoom)
-  return (metersPerPixel * height) / 111320
-}
-
-export function readLatSpanFromRegion(region?: {
-  northeast?: { latitude: number; longitude: number }
-  southwest?: { latitude: number; longitude: number }
-  southeast?: { latitude: number; longitude: number }
-}): number | null {
-  if (!region?.northeast) return null
-  const sw = region.southwest || region.southeast
-  if (!sw) return null
-  const span = Math.abs(region.northeast.latitude - sw.latitude)
-  return span > 1e-8 ? span : null
-}
-
-/**
- * 把目标点对齐到「未被底栏遮挡」的可视中心。
- * latSpan 必须尽量来自地图真实可视区域，避免不同缩放等级偏移不准。
- */
-export function offsetCenterForSheet(
-  center: { latitude: number; longitude: number },
-  coverRatio: number,
-  latSpan: number,
-) {
-  if (!(latSpan > 0)) return { ...center }
-  const clamped = Math.min(Math.max(coverRatio, 0), 0.7)
-  return {
-    latitude: center.latitude - latSpan * (clamped / 2),
-    longitude: center.longitude,
-  }
-}
-
-/** 由地图组件中心反推「可视锚点」 */
-export function reverseOffsetCenterForSheet(
-  mapCenter: { latitude: number; longitude: number },
-  coverRatio: number,
-  latSpan: number,
-) {
-  if (!(latSpan > 0)) return { ...mapCenter }
-  const clamped = Math.min(Math.max(coverRatio, 0), 0.7)
-  return {
-    latitude: mapCenter.latitude + latSpan * (clamped / 2),
-    longitude: mapCenter.longitude,
-  }
-}
-
-/**
- * 根据全部点的包围盒计算中心与缩放，使点落在底栏上方可视区域内。
+ * 根据点包围盒计算中心与缩放，使点落在「可视区域」内。
  * 包围盒外扩三分之一，避免点贴边。
+ * visibleHeightPx：底栏上方可视高度（窗口高 − 底栏高）。
  */
 export function fitMapToPoints(
   coords: Array<{ latitude: number; longitude: number }>,
-  coverRatio: number,
+  visibleHeightPx: number,
 ): { center: { latitude: number; longitude: number }; scale: number } {
   if (coords.length === 0) {
     return { center: { ...DEFAULT_CENTER }, scale: 12 }
@@ -157,18 +108,13 @@ export function fitMapToPoints(
   const latSpan = Math.max(maxLat - minLat, 1e-5) * (4 / 3)
   const lngSpan = Math.max(maxLng - minLng, 1e-5) * (4 / 3)
 
-  const { windowHeight, windowWidth } = getWindowMetrics()
+  const { windowWidth } = getWindowMetrics()
+  const mapH = Math.max(visibleHeightPx, 1)
   const cosLat = Math.max(Math.cos((center.latitude * Math.PI) / 180), 0.2)
-  const visibleHeightRatio = Math.max(
-    1 - Math.min(Math.max(coverRatio, 0), 0.7),
-    0.35,
-  )
-  const neededFullLat = latSpan / visibleHeightRatio
   const metersPerDegLat = 111320
   const metersPerDegLng = 111320 * cosLat
   const scaleFromLat = Math.log2(
-    (156543.03392804097 * cosLat * windowHeight) /
-      (metersPerDegLat * neededFullLat),
+    (156543.03392804097 * cosLat * mapH) / (metersPerDegLat * latSpan),
   )
   const scaleFromLng = Math.log2(
     (156543.03392804097 * cosLat * windowWidth) /

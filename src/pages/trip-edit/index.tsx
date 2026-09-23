@@ -1,14 +1,17 @@
 import { useDidShow, useLoad } from '@tarojs/taro'
 import { View } from '@tarojs/components'
 import Taro from '@tarojs/taro'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CollectedPlace, TravelPlan, TripStop } from '../../types'
 import {
   deleteStop,
   getPlan,
+  getPlanMapFilterPref,
+  getPlanTypeFilterPref,
   listAllPlacesByPlan,
   listStopsByPlan,
   reorderPlanStops,
+  setPlanTypeFilterKeys,
 } from '../../services/storage'
 import {
   TripMapView,
@@ -16,8 +19,46 @@ import {
   collectPlaceTypeOptions,
   filterStopsByPlaceType,
   placeTypeFilterKey,
+  preloadNumberedDotMarkers,
 } from '../../features/trip'
 import './index.scss'
+
+function sameKeys(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  const set = new Set(a)
+  return b.every((k) => set.has(k))
+}
+
+function loadTypeFilterKeys(planId: string, allTypeKeys: string[]): string[] {
+  if (allTypeKeys.length === 0) return []
+  const pref = getPlanTypeFilterPref(planId)
+  if (!pref) return allTypeKeys
+  const keySet = new Set(allTypeKeys)
+  const kept = pref.selected.filter((k) => keySet.has(k))
+  const wasAllSelected = sameKeys(pref.selected, pref.available)
+  if (wasAllSelected) return allTypeKeys
+  return kept
+}
+
+function reconcileTypeFilterKeys(
+  prev: string[],
+  allTypeKeys: string[],
+): string[] {
+  if (allTypeKeys.length === 0) return []
+  const keySet = new Set(allTypeKeys)
+  const kept = prev.filter((k) => keySet.has(k))
+  const missing = allTypeKeys.filter((k) => !kept.includes(k))
+  const hadAllExisting =
+    prev.length > 0 &&
+    missing.length + kept.length === allTypeKeys.length &&
+    allTypeKeys
+      .filter((k) => !missing.includes(k))
+      .every((k) => kept.includes(k))
+  if (hadAllExisting) return allTypeKeys
+  if (prev.length === 0) return []
+  if (kept.length === 0) return allTypeKeys
+  return kept
+}
 
 export default function TripEditPage() {
   const [planId, setPlanId] = useState('')
@@ -26,6 +67,11 @@ export default function TripEditPage() {
   const [stops, setStops] = useState<TripStop[]>([])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterTypeKeys, setFilterTypeKeys] = useState<string[]>([])
+  const [showRoutes, setShowRoutes] = useState(true)
+  const [showRouteTips, setShowRouteTips] = useState(true)
+  const filterHydratedPlanRef = useRef('')
+  const planIdRef = useRef(planId)
+  planIdRef.current = planId
 
   const typeOptions = useMemo(() => collectPlaceTypeOptions(places), [places])
   const allTypeKeys = useMemo(
@@ -35,22 +81,61 @@ export default function TripEditPage() {
   const allTypeKeysSig = allTypeKeys.join(',')
 
   useEffect(() => {
+    if (!planId) {
+      filterHydratedPlanRef.current = ''
+      setFilterTypeKeys([])
+      setShowRoutes(true)
+      setShowRouteTips(true)
+      return
+    }
+    const pref = getPlanMapFilterPref(planId)
+    setShowRoutes(pref.showRoutes)
+    setShowRouteTips(pref.showRouteTips)
+  }, [planId])
+
+  useEffect(() => {
+    if (!planId) {
+      filterHydratedPlanRef.current = ''
+      setFilterTypeKeys([])
+      return
+    }
+    if (allTypeKeys.length === 0) {
+      if (filterHydratedPlanRef.current !== planId) setFilterTypeKeys([])
+      return
+    }
+
+    if (filterHydratedPlanRef.current !== planId) {
+      filterHydratedPlanRef.current = planId
+      setFilterTypeKeys(loadTypeFilterKeys(planId, allTypeKeys))
+      return
+    }
+
     setFilterTypeKeys((prev) => {
-      if (allTypeKeys.length === 0) return []
-      if (prev.length === 0) return allTypeKeys
-      const keySet = new Set(allTypeKeys)
-      const kept = prev.filter((k) => keySet.has(k))
-      const missing = allTypeKeys.filter((k) => !kept.includes(k))
-      const hadAllExisting =
-        missing.length + kept.length === allTypeKeys.length &&
-        allTypeKeys
-          .filter((k) => !missing.includes(k))
-          .every((k) => kept.includes(k))
-      if (hadAllExisting) return allTypeKeys
-      if (kept.length === 0) return allTypeKeys
-      return kept
+      const next = reconcileTypeFilterKeys(prev, allTypeKeys)
+      if (!sameKeys(prev, next)) {
+        void Promise.resolve().then(() => {
+          if (planIdRef.current === planId) {
+            setPlanTypeFilterKeys(planId, next, allTypeKeys)
+          }
+        })
+      }
+      return next
     })
-  }, [allTypeKeysSig, allTypeKeys])
+    // allTypeKeys 由 allTypeKeysSig 代表；避免 places 刷新时引用变化误触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- allTypeKeysSig
+  }, [planId, allTypeKeysSig])
+
+  const onFilterChange = useCallback((keys: string[]) => {
+    setFilterTypeKeys(keys)
+  }, [])
+
+  const onShowRoutesChange = useCallback((next: boolean) => {
+    setShowRoutes(next)
+  }, [])
+
+  const onShowRouteTipsChange = useCallback((next: boolean) => {
+    setShowRouteTips(next)
+  }, [])
 
   const filteredStops = useMemo(
     () =>
@@ -85,6 +170,7 @@ export default function TripEditPage() {
     const id = options?.id || ''
     setPlanId(id)
     refresh(id)
+    void preloadNumberedDotMarkers()
   })
 
   useDidShow(() => {
@@ -111,6 +197,8 @@ export default function TripEditPage() {
         plan={plan}
         places={places}
         stops={filteredStops}
+        showRoutes={showRoutes}
+        showRouteTips={showRouteTips}
         onTripChanged={() => {
           if (!planId) return
           setPlaces(listAllPlacesByPlan(planId))
@@ -144,12 +232,17 @@ export default function TripEditPage() {
         }}
       />
       <TypeFilter
+        planId={planId}
         options={typeOptions}
         selectedKeys={filterTypeKeys}
+        showRoutes={showRoutes}
+        showRouteTips={showRouteTips}
         open={filterOpen}
         onToggle={toggleFilter}
         onClose={closeFilter}
-        onChange={setFilterTypeKeys}
+        onChange={onFilterChange}
+        onShowRoutesChange={onShowRoutesChange}
+        onShowRouteTipsChange={onShowRouteTipsChange}
       />
     </View>
   )

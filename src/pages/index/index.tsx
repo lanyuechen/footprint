@@ -1,5 +1,5 @@
 import { useDidShow } from '@tarojs/taro'
-import { Textarea, View, Text } from '@tarojs/components'
+import { View, Text } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { useState } from 'react'
 import type { TravelPlan } from '../../types'
@@ -12,14 +12,45 @@ import {
   getAppDataExportJson,
   getPlan,
   importAppDataJson,
-  listAllPlacesByPlan,
   listPlans,
-  listStopsByPlan,
   mergePlans,
 } from '../../services/storage'
 import { planToMarkdown } from '../../utils/plan-markdown'
 import { useDropdownAnim } from '../../hooks/useDropdownAnim'
 import './index.scss'
+
+function safeFileBase(name: string) {
+  return (name || '未命名计划')
+    .replace(/[\\/:*?"<>|\s]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 40) || 'plan'
+}
+
+/** 写入临时文件并用微信转发；模拟器降级为复制文本 */
+async function shareTextAsFile(content: string, fileName: string) {
+  const filePath = `${Taro.env.USER_DATA_PATH}/${fileName}`
+  Taro.getFileSystemManager().writeFileSync(filePath, content, 'utf8')
+
+  const platform =
+    Taro.getDeviceInfo?.().platform ||
+    Taro.getSystemInfoSync().platform ||
+    ''
+  if (platform === 'devtools') {
+    await Taro.setClipboardData({ data: content })
+    Taro.showToast({
+      title: '模拟器已复制内容，真机可转发文件',
+      icon: 'none',
+      duration: 2500,
+    })
+    return
+  }
+
+  await Taro.shareFileMessage({
+    filePath,
+    fileName,
+  })
+}
 
 function PlanCard({
   plan,
@@ -108,8 +139,6 @@ function PlanCard({
 export default function IndexPage() {
   const [plans, setPlans] = useState<TravelPlan[]>([])
   const [menuId, setMenuId] = useState<string | null>(null)
-  const [shareMarkdown, setShareMarkdown] = useState<string | null>(null)
-  const [shareTitle, setShareTitle] = useState('')
   const [mergeOpen, setMergeOpen] = useState(false)
   const [mergeSelected, setMergeSelected] = useState<string[]>([])
 
@@ -136,25 +165,38 @@ export default function IndexPage() {
     Taro.navigateTo({ url: `/pages/plan-edit/index?id=${id}` })
   }
 
-  const onShare = (plan: TravelPlan) => {
+  const onShare = async (plan: TravelPlan) => {
     setMenuId(null)
-    const latest = getPlan(plan.id) || plan
-    const md = planToMarkdown(
-      latest,
-      listStopsByPlan(latest.id),
-      listAllPlacesByPlan(latest.id),
-    )
     setMergeOpen(false)
-    setShareTitle(latest.name || '未命名计划')
-    setShareMarkdown(md)
-  }
-
-  const onCopyShare = async () => {
-    if (!shareMarkdown) return
+    const latest = getPlan(plan.id) || plan
+    const md = planToMarkdown(latest)
+    const fileName = `${safeFileBase(latest.name)}.md`
     try {
-      await Taro.setClipboardData({ data: shareMarkdown })
-    } catch {
-      Taro.showToast({ title: '复制失败', icon: 'none' })
+      await shareTextAsFile(md, fileName)
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : typeof err === 'object' &&
+              err &&
+              'errMsg' in err &&
+              typeof (err as { errMsg?: string }).errMsg === 'string'
+            ? (err as { errMsg: string }).errMsg
+            : ''
+      if (/cancel|取消/i.test(msg)) return
+      try {
+        await Taro.setClipboardData({ data: md })
+        Taro.showToast({
+          title: '转发失败，已复制 Markdown',
+          icon: 'none',
+          duration: 2500,
+        })
+      } catch {
+        Taro.showToast({
+          title: msg.includes('fail') ? '分享失败' : msg || '分享失败',
+          icon: 'none',
+        })
+      }
     }
   }
 
@@ -172,7 +214,6 @@ export default function IndexPage() {
   }
 
   const onExportToFile = async () => {
-    setShareMarkdown(null)
     setMergeOpen(false)
     try {
       const json = getAppDataExportJson()
@@ -185,29 +226,7 @@ export default function IndexPage() {
         )
       })()
       const fileName = `footprint-${stamp}.json`
-      const filePath = `${Taro.env.USER_DATA_PATH}/${fileName}`
-      // 同步写入，避免打断点击手势导致 shareFileMessage 失败
-      Taro.getFileSystemManager().writeFileSync(filePath, json, 'utf8')
-
-      const platform =
-        Taro.getDeviceInfo?.().platform ||
-        Taro.getSystemInfoSync().platform ||
-        ''
-      // 开发者工具不支持转发文件，降级为复制 JSON
-      if (platform === 'devtools') {
-        await Taro.setClipboardData({ data: json })
-        Taro.showToast({
-          title: '模拟器已复制 JSON，真机可转发文件',
-          icon: 'none',
-          duration: 2500,
-        })
-        return
-      }
-
-      await Taro.shareFileMessage({
-        filePath,
-        fileName,
-      })
+      await shareTextAsFile(json, fileName)
     } catch (err) {
       const msg =
         err instanceof Error
@@ -251,7 +270,6 @@ export default function IndexPage() {
     })
 
   const onImportFromFile = async () => {
-    setShareMarkdown(null)
     setMergeOpen(false)
     try {
       const picked = await Taro.chooseMessageFile({
@@ -310,7 +328,6 @@ export default function IndexPage() {
       Taro.showToast({ title: '至少需要两个计划', icon: 'none' })
       return
     }
-    setShareMarkdown(null)
     setMergeSelected([])
     setMergeOpen(true)
   }
@@ -410,48 +427,6 @@ export default function IndexPage() {
       <View className='add-plan' onClick={goCreate}>
         <Text className='add-plan__text'>+ 添加计划</Text>
       </View>
-
-      {shareMarkdown != null ? (
-        <View
-          className='export-mask'
-          catchMove
-          onClick={() => setShareMarkdown(null)}
-        >
-          <View
-            className='export-dialog'
-            onClick={(e) => e.stopPropagation()}
-          >
-            <View className='export-dialog__head'>
-              <Text className='export-dialog__title'>
-                分享 · {shareTitle}
-              </Text>
-              <Text
-                className='export-dialog__close'
-                onClick={() => setShareMarkdown(null)}
-              >
-                关闭
-              </Text>
-            </View>
-            <View className='export-dialog__body export-dialog__body--import'>
-              <Text className='export-dialog__hint'>
-                已生成 Markdown，复制后可贴到备忘录、微信等分享
-              </Text>
-              <Textarea
-                className='export-dialog__textarea'
-                value={shareMarkdown}
-                maxlength={-1}
-                disabled
-                showConfirmBar={false}
-              />
-            </View>
-            <View className='export-dialog__foot'>
-              <View className='export-dialog__btn' onClick={onCopyShare}>
-                <Text className='export-dialog__btn-text'>复制 Markdown</Text>
-              </View>
-            </View>
-          </View>
-        </View>
-      ) : null}
 
       {mergeOpen ? (
         <View

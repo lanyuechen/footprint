@@ -1,6 +1,11 @@
 import { View } from '@tarojs/components'
 import type { ReactNode } from 'react'
 import { useRef } from 'react'
+import {
+  getWindowMetrics,
+  mapShiftYFromSheet,
+  MAP_CENTER_EASE_MS,
+} from './map-geometry'
 import { PlanMap } from './PlanMap'
 import type { UseSheetMapCameraResult } from './useSheetMapCamera'
 import type { UseSheetDragResult } from './useSheetDrag'
@@ -84,23 +89,49 @@ export function SheetMapFrame({
     .filter(Boolean)
     .join(' ')
 
+  const { windowHeight } = getWindowMetrics()
+  const shiftY = mapShiftYFromSheet(sheet.sheetHeightNow)
+
   return (
-    <View className={className}>
-      <PlanMap
-        mapId={mapId}
-        gesturingRef={camera.gesturingRef}
-        latitude={camera.mapCenter.latitude}
-        longitude={camera.mapCenter.longitude}
-        scale={camera.mapScale}
-        markers={markers}
-        polyline={polyline}
-        className={mapClassName}
-        showLocation={showLocation}
-        onRegionChange={stableOnRegionChange}
-        onMarkertap={onMarkerTap ? stableOnMarkertap : undefined}
-        onPoiTap={onPoiTap ? stableOnPoiTap : undefined}
-        onClick={onMapClick ? stableOnClick : undefined}
-      />
+    <View
+      className={className}
+      style={{ position: 'relative', overflow: 'hidden' }}
+    >
+      {/*
+        地图固定全屏高度，用 translateY 把几何中心对齐可视区中心；
+        超出部分被裁切。拖 panel 只改位移，不 resize 原生 Map。
+      */}
+      <View
+        className='sheet-map__map-host'
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 0,
+          height: `${windowHeight}px`,
+          transform: `translateY(-${shiftY}px)`,
+          transition: sheet.sheetDragging
+            ? 'none'
+            : `transform ${MAP_CENTER_EASE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+        }}
+      >
+        <PlanMap
+          mapId={mapId}
+          gesturingRef={camera.gesturingRef}
+          latitude={camera.mapCenter.latitude}
+          longitude={camera.mapCenter.longitude}
+          scale={camera.mapScale}
+          markers={markers}
+          polyline={polyline}
+          className={mapClassName}
+          showLocation={showLocation}
+          onRegionChange={stableOnRegionChange}
+          onMarkertap={onMarkerTap ? stableOnMarkertap : undefined}
+          onPoiTap={onPoiTap ? stableOnPoiTap : undefined}
+          onClick={onMapClick ? stableOnClick : undefined}
+        />
+      </View>
 
       <View
         className={resolvedSheetClass}

@@ -50,6 +50,8 @@ export interface CollectedPlace {
   extra?: Record<string, unknown>
 }
 
+export type NavMode = 'walking' | 'riding' | 'transit'
+
 /**
  * 行程点：对收藏地点的一次引用
  * 同一收藏地点可出现多次（往返等）
@@ -64,6 +66,10 @@ export interface TripStop {
   time?: string
   /** 该次行程的纯文本备注 */
   note?: string
+  /** 关键节点：用于分段导航等 */
+  isKeyNode?: boolean
+  /** 前往该关键节点的方式；仅 isKeyNode 时有意义，默认 walking */
+  travelMode?: NavMode
   extra?: Record<string, unknown>
 }
 
@@ -112,8 +118,6 @@ export interface AmapPoi {
   business?: Record<string, unknown>
   biz_ext?: Record<string, unknown>
 }
-
-export type NavMode = 'walking' | 'riding' | 'transit'
 
 export type NavStepKind = 'walk' | 'ride' | 'bus' | 'metro' | 'railway' | 'other'
 

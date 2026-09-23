@@ -404,6 +404,17 @@
     pointer-events: auto;
   }
 
+  &__section {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__divider {
+    height: 1px;
+    margin: 12px 4px 16px;
+    background: #eef0f2;
+  }
+
   &__head {
     display: flex;
     align-items: center;
@@ -453,6 +464,10 @@
     display: flex;
     flex-wrap: wrap;
     gap: 12px 8px;
+
+    &--map {
+      gap: 12px 16px;
+    }
   }
 
   &__item {
@@ -463,6 +478,16 @@
     align-items: center;
     gap: 8px;
     padding: 12px 4px;
+  }
+
+  &__grid--map &__item {
+    width: auto;
+    min-width: 96px;
+    padding: 8px 12px;
+  }
+
+  &__item--locked {
+    opacity: 1;
   }
 
   &__icon {
@@ -765,17 +790,17 @@
     line-height: 40px;
     flex-shrink: 0;
 
+    &--on {
+      background: #1a5f4a;
+      color: #fff;
+    }
+
     &--pin {
       display: flex;
       align-items: center;
       justify-content: center;
       line-height: 0;
     }
-  }
-
-  &--active &__index {
-    background: #1a5f4a;
-    color: #fff;
   }
 
   &__body {
@@ -840,7 +865,7 @@
     display: flex;
     flex-direction: column;
     background: #fff;
-    border-radius: 24px 24px 0 0;
+    border-radius: 0;
     padding: 28px 24px calc(24px + env(safe-area-inset-bottom));
     box-sizing: border-box;
   }
@@ -1076,6 +1101,56 @@
     color: #c45656;
     padding: 4px 0;
   }
+
+  &__key-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 80px;
+  }
+
+  &__check-hit {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-shrink: 0;
+    padding: 8px 0;
+  }
+
+  &__check {
+    box-sizing: border-box;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    border: 2px solid #c8cdd3;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  &__check--on {
+    border-color: #1a5f4a;
+    background: #1a5f4a;
+  }
+
+  &__check-mark {
+    font-size: 22px;
+    color: #fff;
+    line-height: 1;
+  }
+
+  &__check-label {
+    font-size: 28px;
+    color: #1f2329;
+  }
+
+  &__picker--compact {
+    flex: 1;
+    min-width: 0;
+    min-height: 64px;
+  }
 }
 
 .trip-confirm-bar {
@@ -1144,7 +1219,7 @@
     display: flex;
     flex-direction: column;
     background: #fff;
-    border-radius: 24px 24px 0 0;
+    border-radius: 0;
     box-shadow: 0 -8px 28px rgba(15, 23, 20, 0.12);
     padding-bottom: env(safe-area-inset-bottom);
     transform: translateY(108%);
@@ -1181,6 +1256,12 @@
     max-height: 62vh;
     padding: 0 28px;
     box-sizing: border-box;
+
+    &--note {
+      flex: none;
+      max-height: none;
+      padding-bottom: 8px;
+    }
   }
 
   &__type-row {
