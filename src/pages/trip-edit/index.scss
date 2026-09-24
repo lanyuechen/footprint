@@ -1160,21 +1160,27 @@
   bottom: 0;
   z-index: 40;
   display: flex;
-  gap: 0;
-  padding: 0;
-  padding-bottom: env(safe-area-inset-bottom);
+  gap: 16px;
+  padding: 16px 28px 24px;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom));
   background: #fff;
-  box-shadow: 0 -4px 16px rgba(15, 23, 20, 0.08);
+  box-shadow: 0 -4px 16px rgba(15, 23, 20, 0.06);
+  transition: bottom 0.2s ease, padding-bottom 0.2s ease;
+
+  &--keyboard {
+    padding-bottom: 16px;
+  }
 
   &__btn {
     flex: 1;
-    height: 96px;
+    height: 88px;
     display: flex;
     align-items: center;
     justify-content: center;
+    border-radius: 12px;
     font-size: 30px;
     font-weight: 600;
-    color: #1f2329;
+    color: #646a73;
     background: #f2f4f5;
 
     &:active {
@@ -1223,7 +1229,10 @@
     box-shadow: 0 -8px 28px rgba(15, 23, 20, 0.12);
     padding-bottom: env(safe-area-inset-bottom);
     transform: translateY(108%);
-    transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    transition:
+      transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+      bottom 0.2s ease,
+      padding-bottom 0.2s ease;
   }
 
   &--open &__panel {
@@ -1294,7 +1303,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 14px;
+    border-radius: 12px;
     font-size: 30px;
     font-weight: 600;
     color: #646a73;

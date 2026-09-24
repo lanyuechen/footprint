@@ -554,14 +554,68 @@ export async function searchPlaces(
   return mergeSearchHits(tipsResult, places, address, from)
 }
 
-function pickNamedPlace(list: PlaceInfo[], name: string): PlaceInfo | null {
-  const q = name.trim()
+/** 地图点名只认精确同名，避免「厂桥路口东」→「厂桥」、「北京四中」→「北京四中宿舍」 */
+function normalizeMapName(name: string): string {
+  return name.trim().replace(/\s+/g, '')
+}
+
+function pickNamedPlace(
+  list: PlaceInfo[],
+  name: string,
+  coord: { latitude: number; longitude: number },
+): PlaceInfo | null {
+  const q = normalizeMapName(name)
   if (!q || list.length === 0) return null
-  return (
-    list.find((item) => item.name === q) ||
-    list.find((item) => item.name.includes(q) || q.includes(item.name)) ||
-    null
+  const ranked = list
+    .filter((item) => normalizeMapName(item.name) === q)
+    .map((item) => ({ item, dist: distanceMeters(coord, item) }))
+  if (ranked.length === 0) return null
+  ranked.sort((a, b) => a.dist - b.dist)
+  return ranked[0]!.item
+}
+
+/** 腾讯底图点与高德 POI 坐标偏差超过该值时，保留点击坐标，避免地图跳动 */
+const MAP_POI_SNAP_MAX_METERS = 80
+
+function anchorPlaceToTap(
+  place: PlaceInfo,
+  tap: { latitude: number; longitude: number },
+): PlaceInfo {
+  const dist = distanceMeters(tap, place)
+  if (dist <= MAP_POI_SNAP_MAX_METERS) return place
+  return {
+    ...place,
+    latitude: tap.latitude,
+    longitude: tap.longitude,
+  }
+}
+
+/** 无精确同名时：保留底图点名与点击坐标，只补地址等字段 */
+function enrichTapPlace(
+  tapName: string,
+  tap: { latitude: number; longitude: number },
+  nearby: PlaceInfo[],
+  formattedAddress?: string,
+): PlaceInfo | null {
+  const sorted = [...nearby].sort(
+    (a, b) => distanceMeters(tap, a) - distanceMeters(tap, b),
   )
+  const nearest = sorted[0]
+  const address =
+    asText(nearest?.address) || asText(formattedAddress)
+  if (!nearest && !address) return null
+  return {
+    ...(nearest || {
+      name: tapName,
+      address: '',
+      latitude: tap.latitude,
+      longitude: tap.longitude,
+    }),
+    name: tapName,
+    address: address || nearest?.address || '',
+    latitude: tap.latitude,
+    longitude: tap.longitude,
+  }
 }
 
 async function requestAmapJson(url: string): Promise<Record<string, unknown>> {
@@ -624,8 +678,9 @@ export async function lookupMapPlace(
 
   for (const url of aroundUrls) {
     try {
-      const matched = pickNamedPlace(await requestPois(url, coord), q)
-      if (matched) return matched
+      const list = await requestPois(url, coord)
+      const matched = pickNamedPlace(list, q, coord)
+      if (matched) return anchorPlaceToTap(matched, coord)
     } catch {
       // 换下一个接口
     }
@@ -640,35 +695,65 @@ export async function lookupMapPlace(
       | { pois?: AmapPoi[]; formatted_address?: string }
       | undefined
     const pois = Array.isArray(regeocode?.pois) ? regeocode.pois : []
-    const hit =
-      pois.find((poi) => asText(poi.name) === q) ||
-      pois.find((poi) => {
-        const poiName = asText(poi.name)
-        return poiName.includes(q) || q.includes(poiName)
-      })
-    const poiId = asText(hit?.id)
-    if (poiId) {
-      const detailed = await lookupPlaceDetail(key, poiId, coord)
-      if (detailed) return detailed
+    const poiPlaces = pois
+      .map((poi) => poiToPlace(poi, coord))
+      .filter((p): p is PlaceInfo => !!p)
+    const matched = pickNamedPlace(poiPlaces, q, coord)
+    if (matched) {
+      const poiId = matched.poiId
+      if (poiId) {
+        const detailed = await lookupPlaceDetail(key, poiId, coord)
+        if (detailed) return anchorPlaceToTap(detailed, coord)
+      }
+      return anchorPlaceToTap(matched, coord)
     }
-    if (hit) {
-      const raw = hit as AmapPoi & { businessarea?: string }
-      const place = poiToPlace(
-        {
-          ...raw,
-          address: asText(raw.address) || asText(regeocode?.formatted_address),
-          location: asText(raw.location) || location,
-          business_area: asText(raw.business_area) || asText(raw.businessarea),
-        },
-        coord,
-      )
-      if (place) return place
-    }
+    // 无同名 POI：保留底图点名，只补地址等
+    return enrichTapPlace(q, coord, poiPlaces, asText(regeocode?.formatted_address))
   } catch {
     return null
   }
+}
 
-  return null
+/**
+ * 地图空白点击：无 POI 名，逆地理补地址，坐标始终用点击点。
+ */
+export async function lookupMapCoord(
+  coord: { latitude: number; longitude: number },
+): Promise<PlaceInfo | null> {
+  const key = AMAP_CONFIG.webServiceKey
+  if (isPlaceholderKey(key)) return null
+
+  const location = formatLocation(coord)
+  const fallback: PlaceInfo = {
+    name: '地图选点',
+    address: '',
+    latitude: coord.latitude,
+    longitude: coord.longitude,
+  }
+
+  try {
+    const payload = await requestAmapJson(
+      `https://restapi.amap.com/v3/geocode/regeo?key=${encodeURIComponent(key)}` +
+        `&location=${location}&extensions=all&radius=200&poitype=&roadlevel=0`,
+    )
+    const regeocode = payload.regeocode as
+      | { pois?: AmapPoi[]; formatted_address?: string }
+      | undefined
+    const pois = Array.isArray(regeocode?.pois) ? regeocode.pois : []
+    const poiPlaces = pois
+      .map((poi) => poiToPlace(poi, coord))
+      .filter((p): p is PlaceInfo => !!p)
+    return (
+      enrichTapPlace(
+        '地图选点',
+        coord,
+        poiPlaces,
+        asText(regeocode?.formatted_address),
+      ) || fallback
+    )
+  } catch {
+    return fallback
+  }
 }
 
 /** 获取当前位置，失败返回 null */

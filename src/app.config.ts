@@ -3,6 +3,7 @@ export default defineAppConfig({
     'pages/index/index',
     'pages/plan-edit/index',
     'pages/trip-edit/index',
+    'pages/stop-edit/index',
     'pages/nav/index',
   ],
   window: {

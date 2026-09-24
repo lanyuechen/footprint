@@ -1,4 +1,4 @@
-import { View, Text, Picker, ScrollView, Textarea } from '@tarojs/components'
+import { View, Text, Picker, Textarea, Input } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { useEffect, useState, type ReactNode } from 'react'
 import { AlarmClock } from 'lucide-react-taro/icons/alarm-clock'
@@ -14,13 +14,12 @@ import { updatePlaceInfo, updateStopSchedule } from '../../../services/storage'
 import { formatDistance } from '../../../utils/datetime'
 import { GroupedSortList, type SortGroup } from '../GroupedSortList'
 import {
-  PLACE_TYPE_OPTIONS,
   placeAxisMark,
   lightenColor,
   matchPlaceTypeOption,
-  type PlaceTypeOption,
 } from '../place-axis'
 import { useDropdownAnim } from '../../../hooks/useDropdownAnim'
+import { useKeyboardHeight } from '../../../hooks/useKeyboardHeight'
 
 export type TripStopView = TripStop & {
   place: CollectedPlace['place']
@@ -87,7 +86,7 @@ function TripStopCard({
   onToggleMenu,
   onEditStop,
   onRemoveStop,
-  onPickType,
+  onPickName,
   onPickNote,
   onStopUpdated,
   routeDistanceByToStopId,
@@ -102,12 +101,12 @@ function TripStopCard({
   onToggleMenu: () => void
   onEditStop: (stop: TripStopView) => void
   onRemoveStop: (stopId: string) => void
-  onPickType: (stop: TripStopView) => void
+  onPickName: (stop: TripStopView) => void
   onPickNote: (stop: TripStopView) => void
   onStopUpdated?: () => void
   /** 到达该关键节点的路径距离（米）；有则标签展示距离 */
   routeDistanceByToStopId?: Record<string, number>
-  /** sheet 顶部时才允许点标签 / 备注快速编辑 */
+  /** sheet 顶部时才允许点名称 / 备注快速编辑 */
   quickEditEnabled?: boolean
 }) {
   const timeLabel = stop.time?.trim() || ''
@@ -202,7 +201,27 @@ function TripStopCard({
         className={`gsl-card gsl-card--flat${
           dragging ? ' gsl-card--active' : ''
         }`}
+        style={{
+          background: `linear-gradient(105deg, ${lightenColor(
+            typeColor,
+            0.72,
+          )} 0%, ${lightenColor(typeColor, 0.9)} 32%, #ffffff 68%)`,
+        }}
       >
+        <View className='gsl-card__wash' aria-hidden>
+          <View className='gsl-card__mark'>
+            <TypeIcon size={78} color={typeColor} />
+          </View>
+          <View
+            className='gsl-card__mark-fade'
+            style={{
+              background: `linear-gradient(90deg, transparent 0%, ${lightenColor(
+                typeColor,
+                0.94,
+              )} 42%, #ffffff 100%)`,
+            }}
+          />
+        </View>
         <View className='gsl-card__row'>
           <View className='gsl-card__main'>
             <View className='gsl-card__tags'>
@@ -225,22 +244,6 @@ function TripStopCard({
                   </View>
                 </Picker>
               ) : null}
-              <View
-                className='gsl-card__type'
-                style={{
-                  color: typeColor,
-                  backgroundColor: lightenColor(typeColor, 0.88),
-                }}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (!canQuickEdit) return
-                  if (menuOpen) onToggleMenu()
-                  onPickType(stop)
-                }}
-              >
-                <TypeIcon size={12} color={typeColor} />
-                <Text className='gsl-card__type-text'>{typeOption.label}</Text>
-              </View>
               {keyTravel && KeyTravelIcon ? (
                 <View className='gsl-card__travel' onClick={goKeyNodeNav}>
                   <KeyTravelIcon size={12} color='#1a5f4a' />
@@ -248,7 +251,23 @@ function TripStopCard({
                 </View>
               ) : null}
             </View>
-            <View className='gsl-card__name'>{stop.place.name}</View>
+            <View
+              className={`gsl-card__name${
+                canQuickEdit ? '' : ' gsl-card__name--readonly'
+              }`}
+            >
+              <Text
+                className='gsl-card__name-text'
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (!canQuickEdit || dragging) return
+                  if (menuOpen) onToggleMenu()
+                  onPickName(stop)
+                }}
+              >
+                {stop.place.name}
+              </Text>
+            </View>
             <View
               className={`gsl-card__note${
                 note ? '' : ' gsl-card__note--empty'
@@ -328,13 +347,13 @@ export type TripBrowseListProps = {
   onChange: (groups: SortGroup<TripStopView>[]) => void
   onEditStop: (stop: TripStopView) => void
   onRemoveStop: (stopId: string) => void
-  onPickType: (stop: TripStopView) => void
+  onPickName?: (stop: TripStopView) => void
   onPickNote?: (stop: TripStopView) => void
   onStopUpdated?: () => void
   onRemoveDay?: () => void
   /** 到达关键节点的路径距离（toStopId → meters） */
   routeDistanceByToStopId?: Record<string, number>
-  /** sheet 顶部时才允许点标签 / 备注快速编辑 */
+  /** sheet 顶部时才允许点名称 / 备注快速编辑 */
   quickEditEnabled?: boolean
 }
 
@@ -351,7 +370,7 @@ export function TripBrowseList({
   onChange,
   onEditStop,
   onRemoveStop,
-  onPickType,
+  onPickName,
   onPickNote,
   onStopUpdated,
   onRemoveDay,
@@ -443,9 +462,9 @@ export function TripBrowseList({
                 setMenuId(null)
                 onRemoveStop(stopId)
               }}
-              onPickType={(s) => {
+              onPickName={(s) => {
                 setMenuId(null)
-                onPickType(s)
+                onPickName?.(s)
               }}
               onPickNote={(s) => {
                 setMenuId(null)
@@ -458,6 +477,126 @@ export function TripBrowseList({
           )
         }}
       />
+    </View>
+  )
+}
+
+export type TripNameEditSheetProps = {
+  open: boolean
+  stop: TripStopView | null
+  onClose: () => void
+  onSaved: () => void
+}
+
+/** 卡片名称：上浮框快速编辑 */
+export function TripNameEditSheet({
+  open,
+  stop,
+  onClose,
+  onSaved,
+}: TripNameEditSheetProps) {
+  const { mounted, shown } = useDropdownAnim(open)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [inputFocus, setInputFocus] = useState(false)
+  const keyboardHeight = useKeyboardHeight(open && shown)
+
+  useEffect(() => {
+    if (open && stop) {
+      setDraft(stop.place.name || '')
+      setSaving(false)
+    }
+    if (!open) {
+      setDraft('')
+      setSaving(false)
+      setInputFocus(false)
+    }
+  }, [open, stop])
+
+  useEffect(() => {
+    if (!shown) {
+      setInputFocus(false)
+      return
+    }
+    const timer = setTimeout(() => setInputFocus(true), 300)
+    return () => clearTimeout(timer)
+  }, [shown])
+
+  if (!mounted || !stop) return null
+
+  const save = () => {
+    if (saving) return
+    const next = draft.trim()
+    if (!next) {
+      Taro.showToast({ title: '请填写名称', icon: 'none' })
+      return
+    }
+    const prev = stop.place.name?.trim() || ''
+    if (next === prev) {
+      onClose()
+      return
+    }
+    setSaving(true)
+    const updated = updatePlaceInfo(stop.placeId, { name: next })
+    setSaving(false)
+    if (!updated) {
+      Taro.showToast({ title: '保存失败', icon: 'none' })
+      return
+    }
+    onSaved()
+  }
+
+  return (
+    <View
+      className={`trip-stop-edit${shown ? ' trip-stop-edit--open' : ''}`}
+      catchMove
+    >
+      <View className='trip-stop-edit__mask' onClick={onClose} />
+      <View
+        className='trip-stop-edit__panel'
+        style={{
+          bottom: keyboardHeight,
+          paddingBottom: keyboardHeight > 0 ? 8 : undefined,
+        }}
+      >
+        <View className='trip-stop-edit__head'>
+          <Text className='trip-stop-edit__title'>名称</Text>
+          <Text className='trip-stop-edit__close' onClick={onClose}>
+            关闭
+          </Text>
+        </View>
+        <View className='trip-stop-edit__body trip-stop-edit__body--note'>
+          <View className='card-edit'>
+            <View className='card-edit__field'>
+              <Input
+                className='card-edit__input'
+                value={draft}
+                placeholder='地点名称'
+                maxlength={40}
+                focus={inputFocus}
+                adjustPosition={false}
+                holdKeyboard
+                confirmType='done'
+                onInput={(e) => setDraft(e.detail.value)}
+                onConfirm={save}
+              />
+            </View>
+          </View>
+        </View>
+        <View className='trip-stop-edit__foot'>
+          <View className='trip-stop-edit__btn' onClick={onClose}>
+            取消
+          </View>
+          <View
+            className={`trip-stop-edit__btn trip-stop-edit__btn--primary${
+              saving ? ' trip-stop-edit__btn--disabled' : ''
+            }`}
+            onClick={save}
+          >
+            保存
+          </View>
+        </View>
+      </View>
     </View>
   )
 }
@@ -479,6 +618,8 @@ export function TripNoteEditSheet({
   const { mounted, shown } = useDropdownAnim(open)
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
+  const [inputFocus, setInputFocus] = useState(false)
+  const keyboardHeight = useKeyboardHeight(open && shown)
 
   useEffect(() => {
     if (open && stop) {
@@ -488,8 +629,19 @@ export function TripNoteEditSheet({
     if (!open) {
       setDraft('')
       setSaving(false)
+      setInputFocus(false)
     }
   }, [open, stop])
+
+  useEffect(() => {
+    if (!shown) {
+      setInputFocus(false)
+      return
+    }
+    // 等弹层动画结束再聚焦，减少与键盘同时抢布局
+    const timer = setTimeout(() => setInputFocus(true), 300)
+    return () => clearTimeout(timer)
+  }, [shown])
 
   if (!mounted || !stop) return null
 
@@ -517,7 +669,14 @@ export function TripNoteEditSheet({
       catchMove
     >
       <View className='trip-stop-edit__mask' onClick={onClose} />
-      <View className='trip-stop-edit__panel'>
+      <View
+        className='trip-stop-edit__panel'
+        style={{
+          bottom: keyboardHeight,
+          paddingBottom:
+            keyboardHeight > 0 ? 8 : undefined,
+        }}
+      >
         <View className='trip-stop-edit__head'>
           <Text className='trip-stop-edit__title'>备注</Text>
           <Text className='trip-stop-edit__close' onClick={onClose}>
@@ -533,9 +692,10 @@ export function TripNoteEditSheet({
                 placeholder='添加备注'
                 maxlength={200}
                 autoHeight
-                focus={shown}
+                focus={inputFocus}
                 showConfirmBar={false}
-                adjustPosition
+                adjustPosition={false}
+                holdKeyboard
                 onInput={(e) => setDraft(e.detail.value)}
               />
             </View>
@@ -554,91 +714,6 @@ export function TripNoteEditSheet({
             保存
           </View>
         </View>
-      </View>
-    </View>
-  )
-}
-
-export type TripTypePickSheetProps = {
-  open: boolean
-  stop: TripStopView | null
-  onClose: () => void
-  onPicked: () => void
-}
-
-/** 卡片类型标签：快速切换地点类型 */
-export function TripTypePickSheet({
-  open,
-  stop,
-  onClose,
-  onPicked,
-}: TripTypePickSheetProps) {
-  const { mounted, shown } = useDropdownAnim(open)
-  if (!mounted || !stop) return null
-
-  const current = matchPlaceTypeOption(stop.place)
-
-  const pick = (opt: PlaceTypeOption) => {
-    if (
-      opt.typecode === current.typecode &&
-      opt.label === current.label
-    ) {
-      onClose()
-      return
-    }
-    const place = updatePlaceInfo(stop.placeId, {
-      type: opt.type,
-      typecode: opt.typecode,
-    })
-    if (!place) {
-      Taro.showToast({ title: '设置失败', icon: 'none' })
-      return
-    }
-    onPicked()
-  }
-
-  return (
-    <View
-      className={`trip-stop-edit${shown ? ' trip-stop-edit--open' : ''}`}
-      catchMove
-    >
-      <View className='trip-stop-edit__mask' onClick={onClose} />
-      <View className='trip-stop-edit__panel'>
-        <View className='trip-stop-edit__head'>
-          <Text className='trip-stop-edit__title'>选择类型</Text>
-          <Text className='trip-stop-edit__close' onClick={onClose}>
-            关闭
-          </Text>
-        </View>
-        <ScrollView scrollY className='trip-stop-edit__body' enhanced>
-          <View className='type-grid'>
-            {PLACE_TYPE_OPTIONS.map((opt) => {
-              const on =
-                opt.typecode === current.typecode &&
-                opt.label === current.label
-              const Icon = opt.mark.icon
-              return (
-                <View
-                  key={`${opt.typecode}-${opt.label}`}
-                  className={`type-grid__item${
-                    on ? ' type-grid__item--on' : ''
-                  }`}
-                  onClick={() => pick(opt)}
-                >
-                  <View
-                    className='type-grid__icon'
-                    style={{
-                      backgroundColor: lightenColor(opt.mark.color),
-                    }}
-                  >
-                    <Icon size={18} color={opt.mark.color} />
-                  </View>
-                  <Text className='type-grid__label'>{opt.label}</Text>
-                </View>
-              )
-            })}
-          </View>
-        </ScrollView>
       </View>
     </View>
   )

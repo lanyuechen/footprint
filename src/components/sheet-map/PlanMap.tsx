@@ -18,7 +18,9 @@ export type PlanMapProps = {
   onPoiTap?: (e: {
     detail: { name?: string; latitude?: number; longitude?: number }
   }) => void
-  onClick?: () => void
+  onClick?: (e: {
+    detail: { latitude?: number; longitude?: number }
+  }) => void
   children?: ReactNode
 }
 

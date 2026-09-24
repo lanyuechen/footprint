@@ -21,13 +21,13 @@ import {
 import {
   TripBrowseHeader,
   TripBrowseList,
+  TripNameEditSheet,
   TripNoteEditSheet,
-  TripTypePickSheet,
   type TripStopView,
 } from './panels/TripBrowsePanel'
 import { TripDayTabs } from './panels/TripDayTabs'
-import { TripStopEditSheet } from './panels/TripStopEditSheet'
 import { useTripPlacePick } from './panels/useTripPlacePick'
+import { useKeyboardHeight } from '../../hooks/useKeyboardHeight'
 import {
   keyNodeSegmentsToDistanceMarkers,
   keyNodeSegmentsToPolylines,
@@ -113,11 +113,12 @@ export function TripMapView({
   )
   const [sheetPos, setSheetPos] = useState<SheetPos>('top')
   const [adding, setAdding] = useState(false)
-  const [editingStop, setEditingStop] = useState<TripStopView | null>(null)
-  const [typePickerStop, setTypePickerStop] = useState<TripStopView | null>(
+  const [addSearchFocus, setAddSearchFocus] = useState(false)
+  const addKeyboardHeight = useKeyboardHeight(adding)
+  const [notePickerStop, setNotePickerStop] = useState<TripStopView | null>(
     null,
   )
-  const [notePickerStop, setNotePickerStop] = useState<TripStopView | null>(
+  const [namePickerStop, setNamePickerStop] = useState<TripStopView | null>(
     null,
   )
   const [selectedStopId, setSelectedStopId] = useState('')
@@ -218,6 +219,7 @@ export function TripMapView({
   )
 
   const exitAdding = useCallback(() => {
+    setAddSearchFocus(false)
     setAdding(false)
   }, [])
 
@@ -253,6 +255,12 @@ export function TripMapView({
     placePick.confirm()
     resetPick()
   }, [placePick, closeAdding, resetPick])
+
+  // 添加页：panel 离开顶部（划到中部/底部）时搜索失焦收起键盘
+  useEffect(() => {
+    if (!adding) return
+    if (sheetPos !== 'top') setAddSearchFocus(false)
+  }, [adding, sheetPos])
 
   const handleAddDay = useCallback(() => {
     const next = previewNextTripDay(plan)
@@ -495,6 +503,8 @@ export function TripMapView({
     }
     setSelectedStopId('')
     placePick.reset()
+    setSheetPos('top')
+    setAddSearchFocus(true)
     setAdding(true)
   }
 
@@ -571,12 +581,18 @@ export function TripMapView({
           if (stop) focusStop(stop, { scrollList: true })
         }}
         onPoiTap={adding ? placePick.onMapPoiTap : undefined}
+        onMapClick={adding ? placePick.onMapTap : undefined}
         header={
           adding ? (
             <TripAddHeader
               keyword={placePick.keyword}
               onKeywordChange={placePick.setKeyword}
-              onFocus={() => setSheetPos('top')}
+              focused={addSearchFocus}
+              onFocus={() => {
+                setAddSearchFocus(true)
+                setSheetPos('top')
+              }}
+              onBlur={() => setAddSearchFocus(false)}
             />
           ) : (
             <TripBrowseHeader
@@ -611,6 +627,7 @@ export function TripMapView({
               mapPickedPlace={placePick.mapPickedPlace}
               isPlacePicked={placePick.isPlacePicked}
               isFavorited={placePick.isFavorited}
+              keyboardHeight={addKeyboardHeight}
               onSelectPlace={(place, source) => {
                 placePick.selectPlace(place, source)
                 if ((source ?? 'list') === 'list') {
@@ -639,24 +656,33 @@ export function TripMapView({
               }}
               onChange={handleSortChange}
               onEditStop={(stop) => {
-                setTypePickerStop(null)
                 setNotePickerStop(null)
+                setNamePickerStop(null)
                 setSelectedStopId(stop.id)
-                setEditingStop(stop)
+                Taro.navigateTo({
+                  url:
+                    `/pages/stop-edit/index?planId=${encodeURIComponent(plan.id)}` +
+                    `&stopId=${encodeURIComponent(stop.id)}`,
+                  events: {
+                    saved: (data: { dayIndex: number; stopId: string }) => {
+                      setDayKey(String(data.dayIndex))
+                      setSelectedStopId(data.stopId)
+                      onTripChanged?.()
+                    },
+                  },
+                })
               }}
               onRemoveStop={(stopId) => {
                 onRemoveStop(stopId)
                 setSelectedStopId('')
               }}
-              onPickType={(stop) => {
-                setEditingStop(null)
+              onPickName={(stop) => {
                 setNotePickerStop(null)
                 setSelectedStopId(stop.id)
-                setTypePickerStop(stop)
+                setNamePickerStop(stop)
               }}
               onPickNote={(stop) => {
-                setEditingStop(null)
-                setTypePickerStop(null)
+                setNamePickerStop(null)
                 setSelectedStopId(stop.id)
                 setNotePickerStop(stop)
               }}
@@ -671,28 +697,17 @@ export function TripMapView({
       {adding ? (
         <TripConfirmBar
           count={placePick.tripPickCount}
+          keyboardHeight={addKeyboardHeight}
           onCancel={closeAdding}
           onConfirm={confirmAdding}
         />
       ) : null}
-      <TripStopEditSheet
-        open={editingStop != null}
-        plan={plan}
-        stop={editingStop}
-        onClose={() => setEditingStop(null)}
-        onSaved={({ dayIndex, stopId }) => {
-          setEditingStop(null)
-          setDayKey(String(dayIndex))
-          setSelectedStopId(stopId)
-          onTripChanged?.()
-        }}
-      />
-      <TripTypePickSheet
-        open={typePickerStop != null}
-        stop={typePickerStop}
-        onClose={() => setTypePickerStop(null)}
-        onPicked={() => {
-          setTypePickerStop(null)
+      <TripNameEditSheet
+        open={namePickerStop != null}
+        stop={namePickerStop}
+        onClose={() => setNamePickerStop(null)}
+        onSaved={() => {
+          setNamePickerStop(null)
           onTripChanged?.()
         }}
       />

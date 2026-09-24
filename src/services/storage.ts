@@ -769,6 +769,10 @@ export function listStopsByPlan(planId: string): TripStop[] {
   return sortStopsByIds(stops, plan?.stopIds || [])
 }
 
+export function getStop(stopId: string): TripStop | undefined {
+  return readStore().stops.find((s) => s.id === stopId)
+}
+
 function ensureDayIndexInPlan(plan: TravelPlan, dayIndex: number) {
   if (!Number.isFinite(dayIndex) || dayIndex < 0) return
   const next = Math.floor(dayIndex) + 1

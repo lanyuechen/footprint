@@ -31,7 +31,9 @@ export type SheetMapFrameProps = {
   onPoiTap?: (e: {
     detail: { name?: string; latitude?: number; longitude?: number }
   }) => void
-  onMapClick?: () => void
+  onMapClick?: (e: {
+    detail: { latitude?: number; longitude?: number }
+  }) => void
 }
 
 export function SheetMapFrame({
@@ -77,9 +79,11 @@ export function SheetMapFrame({
       onPoiTapRef.current?.(e)
     },
   ).current
-  const stableOnClick = useRef(() => {
-    onMapClickRef.current?.()
-  }).current
+  const stableOnClick = useRef(
+    (e: { detail: { latitude?: number; longitude?: number } }) => {
+      onMapClickRef.current?.(e)
+    },
+  ).current
 
   const resolvedSheetClass = [
     sheetClassName,

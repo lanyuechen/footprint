@@ -4,6 +4,7 @@ import type { CollectedPlace, PlaceInfo } from '../../../types'
 import {
   distanceMeters,
   getUserLocation,
+  lookupMapCoord,
   lookupMapPlace,
   searchPlaces,
   type UserLocation,
@@ -12,7 +13,6 @@ import { addStopsToDay, ensureFavoritePlace, ensurePlaceRecord, unfavoritePlace 
 import {
   MARKER_ID_SEARCH,
   SEARCH_DEBOUNCE_MS,
-  nearlySameCoord,
 } from '../../../components/sheet-map'
 import { isSamePlace } from '../place-info'
 import {
@@ -85,6 +85,7 @@ export function useTripPlacePick({
   const searchSeq = useRef(0)
   const lastQueryRef = useRef('')
   const mapPoiSeq = useRef(0)
+  const lastMapPoiTapAt = useRef(0)
   const getMapCenterRef = useRef(getMapCenter)
   getMapCenterRef.current = getMapCenter
   const onFocusMapRef = useRef(onFocusMap)
@@ -320,6 +321,8 @@ export function useTripPlacePick({
     }) => {
       const { name, latitude, longitude } = e.detail || {}
       if (latitude == null || longitude == null) return
+      // 点 POI 时往往会再冒泡一次 bindtap，短时忽略空白点击
+      lastMapPoiTapAt.current = Date.now()
       const label = name?.trim() || '地图选点'
       const fallback: PlaceInfo = {
         name: label,
@@ -337,17 +340,34 @@ export function useTripPlacePick({
           setPinnedSearchPlace(next)
           setSelectedPlace(next)
           setPendingPlace(next)
-          if (
-            !nearlySameCoord(
-              { latitude: next.latitude, longitude: next.longitude },
-              { latitude, longitude },
-            )
-          ) {
-            onFocusMapRef.current({
-              latitude: next.latitude,
-              longitude: next.longitude,
-            })
-          }
+        })
+        .catch(() => {})
+    },
+    [selectPlace, placeFromMap],
+  )
+
+  /** 点击地图空白：任意坐标加入行程 */
+  const onMapTap = useCallback(
+    (e: { detail: { latitude?: number; longitude?: number } }) => {
+      const { latitude, longitude } = e.detail || {}
+      if (latitude == null || longitude == null) return
+      if (Date.now() - lastMapPoiTapAt.current < 400) return
+      const fallback: PlaceInfo = {
+        name: '地图选点',
+        address: '',
+        latitude,
+        longitude,
+      }
+      const seq = ++mapPoiSeq.current
+      selectPlace(fallback, 'map')
+      void lookupMapCoord({ latitude, longitude })
+        .then((place) => {
+          if (seq !== mapPoiSeq.current || !place) return
+          const next = placeFromMap(place)
+          setMapPickedPlace(next)
+          setPinnedSearchPlace(next)
+          setSelectedPlace(next)
+          setPendingPlace(next)
         })
         .catch(() => {})
     },
@@ -539,6 +559,7 @@ export function useTripPlacePick({
     syncFavorites,
     selectPlace,
     onMapPoiTap,
+    onMapTap,
     onMarkerTap,
     markers,
     selectedMarkerId,

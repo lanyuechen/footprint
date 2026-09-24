@@ -90,11 +90,11 @@ export default function PlanEditPage() {
         />
       </View>
       <View className='actions'>
-        <View className='btn btn--primary' onClick={onSave}>
-          保存
-        </View>
         <View className='btn btn--ghost' onClick={() => Taro.navigateBack()}>
           取消
+        </View>
+        <View className='btn btn--primary' onClick={onSave}>
+          保存
         </View>
       </View>
     </View>

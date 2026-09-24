@@ -251,6 +251,7 @@
 }
 
 .gsl-card {
+  position: relative;
   flex: 1;
   min-width: 0;
   box-sizing: border-box;
@@ -270,7 +271,37 @@
     opacity: 0.72;
   }
 
+  &__wash {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  &__mark {
+    position: absolute;
+    left: 20px;
+    top: 50%;
+    width: 140px;
+    height: 140px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    transform: translateY(-52%);
+    opacity: 0.16;
+  }
+
+  &__mark-fade {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
   &__row {
+    position: relative;
+    z-index: 1;
     display: flex;
     align-items: flex-start;
     gap: 8px;
@@ -344,6 +375,18 @@
     color: #1f2329;
     line-height: 1.35;
     word-break: break-all;
+
+    &--readonly {
+      pointer-events: none;
+    }
+  }
+
+  &__name-text {
+    display: inline;
+    font-size: inherit;
+    font-weight: inherit;
+    color: inherit;
+    line-height: inherit;
   }
 
   &__type {

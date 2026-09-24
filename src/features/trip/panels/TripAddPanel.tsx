@@ -56,7 +56,10 @@ function HighlightText({
 export type TripAddSearchBarProps = {
   keyword: string
   onKeywordChange: (value: string) => void
+  /** 受控聚焦；离开顶部档时应为 false */
+  focused?: boolean
   onFocus?: () => void
+  onBlur?: () => void
 }
 
 /** 添加模式：抓手（sheet grab 区） */
@@ -72,7 +75,9 @@ export function TripAddGrab() {
 export const TripAddSearchBar = memo(function TripAddSearchBar({
   keyword,
   onKeywordChange,
+  focused = false,
   onFocus,
+  onBlur,
 }: TripAddSearchBarProps) {
   return (
     <View className='sheet__search-bar trip-add__search-bar'>
@@ -84,11 +89,14 @@ export const TripAddSearchBar = memo(function TripAddSearchBar({
         <Input
           className='sheet__input'
           value={keyword}
-          focus
+          focus={focused}
           placeholder='搜索地点'
           confirmType='search'
+          adjustPosition={false}
+          holdKeyboard
           onInput={(e) => onKeywordChange(e.detail.value)}
           onFocus={() => onFocus?.()}
+          onBlur={() => onBlur?.()}
         />
       </View>
     </View>
@@ -99,7 +107,9 @@ export const TripAddSearchBar = memo(function TripAddSearchBar({
 export function TripAddHeader({
   keyword,
   onKeywordChange,
+  focused,
   onFocus,
+  onBlur,
 }: TripAddSearchBarProps) {
   return (
     <>
@@ -107,7 +117,9 @@ export function TripAddHeader({
       <TripAddSearchBar
         keyword={keyword}
         onKeywordChange={onKeywordChange}
+        focused={focused}
         onFocus={onFocus}
+        onBlur={onBlur}
       />
     </>
   )
@@ -128,6 +140,8 @@ export type TripAddListProps = {
   onTogglePick: (place: PlaceInfo) => void
   onToggleCollected: (point: CollectedPlace) => void
   onToggleFavorite: (place: PlaceInfo) => void
+  /** 键盘高度：列表底部留白，避免被键盘与确定栏挡住 */
+  keyboardHeight?: number
 }
 
 /** 添加模式：地图选点 / 搜索结果 / 已收藏列表 */
@@ -145,6 +159,7 @@ export function TripAddList({
   onTogglePick,
   onToggleCollected,
   onToggleFavorite,
+  keyboardHeight = 0,
 }: TripAddListProps) {
   const showSearchResults = results.length > 0 || searching || hasSearched
   const mapPickedActive =
@@ -193,7 +208,14 @@ export function TripAddList({
       enhanced
       showScrollbar
     >
-      <View className='sheet__body-inner'>
+      <View
+        className='sheet__body-inner'
+        style={
+          keyboardHeight > 0
+            ? { paddingBottom: `${keyboardHeight + 80}px` }
+            : undefined
+        }
+      >
         {showMapPickedCard && mapPickedPlace && (
           <>
             <View className='sheet__section-title'>选中地点</View>
@@ -278,7 +300,7 @@ export function TripAddList({
         <View className='sheet__section-title'>已收藏（{places.length}）</View>
         {places.length === 0 ? (
           <View className='sheet__empty'>
-            暂无收藏，搜索或点地图选点后可加入行程
+            暂无收藏，搜索或点击地图选点后可加入行程
           </View>
         ) : (
           places.map((point, index) => {
@@ -320,15 +342,21 @@ export type TripConfirmBarProps = {
   count: number
   onCancel: () => void
   onConfirm: () => void
+  /** 键盘顶起高度，避免搜索时按钮被挡住 */
+  keyboardHeight?: number
 }
 
 export function TripConfirmBar({
   count,
   onCancel,
   onConfirm,
+  keyboardHeight = 0,
 }: TripConfirmBarProps) {
   return (
-    <View className='trip-confirm-bar'>
+    <View
+      className={`trip-confirm-bar${keyboardHeight > 0 ? ' trip-confirm-bar--keyboard' : ''}`}
+      style={{ bottom: keyboardHeight }}
+    >
       <View className='trip-confirm-bar__btn' onClick={onCancel}>
         取消
       </View>
