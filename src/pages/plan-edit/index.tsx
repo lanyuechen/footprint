@@ -46,7 +46,7 @@ export default function PlanEditPage() {
       Taro.showToast({ title: '已保存', icon: 'success' })
       setTimeout(() => Taro.navigateBack(), 500)
     } else {
-      createPlan({ name, description, startDate })
+      createPlan({ name, description: '', startDate })
       Taro.showToast({ title: '已创建', icon: 'success' })
       setTimeout(() => Taro.navigateBack(), 500)
     }
@@ -79,16 +79,18 @@ export default function PlanEditPage() {
         </Picker>
         <Text className='field__hint'>时间轴将以此日为起点</Text>
       </View>
-      <View className='field'>
-        <Text className='field__label'>描述</Text>
-        <Textarea
-          className='field__textarea'
-          value={description}
-          maxlength={200}
-          placeholder='可选，补充计划说明'
-          onInput={(e) => setDescription(e.detail.value)}
-        />
-      </View>
+      {isEdit ? (
+        <View className='field'>
+          <Text className='field__label'>描述</Text>
+          <Textarea
+            className='field__textarea'
+            value={description}
+            maxlength={200}
+            placeholder='可选，补充计划说明'
+            onInput={(e) => setDescription(e.detail.value)}
+          />
+        </View>
+      ) : null}
       <View className='actions'>
         <View className='btn btn--ghost' onClick={() => Taro.navigateBack()}>
           取消

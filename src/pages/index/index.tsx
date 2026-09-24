@@ -4,6 +4,7 @@ import Taro from '@tarojs/taro'
 import { useState } from 'react'
 import type { TravelPlan } from '../../types'
 import { EllipsisVertical } from 'lucide-react-taro/icons/ellipsis-vertical'
+import { ListOrdered } from 'lucide-react-taro/icons/list-ordered'
 import { Share2 } from 'lucide-react-taro/icons/share-2'
 import { SquarePen } from 'lucide-react-taro/icons/square-pen'
 import { Trash2 } from 'lucide-react-taro/icons/trash-2'
@@ -57,6 +58,7 @@ function PlanCard({
   menuOpen,
   onToggleMenu,
   onOpenDetail,
+  onOpenTrip,
   onShare,
   onEdit,
   onDelete,
@@ -65,6 +67,7 @@ function PlanCard({
   menuOpen: boolean
   onToggleMenu: (id: string) => void
   onOpenDetail: (id: string) => void
+  onOpenTrip: (id: string) => void
   onShare: (plan: TravelPlan) => void
   onEdit: (id: string) => void
   onDelete: (plan: TravelPlan) => void
@@ -82,11 +85,21 @@ function PlanCard({
           {!!plan.startDate && (
             <View className='plan-item__meta'>{plan.startDate}</View>
           )}
-          {!!plan.description && (
-            <View className='plan-item__desc'>{plan.description}</View>
-          )}
+          <View className='plan-item__desc'>
+            {Math.max(1, plan.dayCount || 1)} 天 · {plan.stopIds?.length || 0}{' '}
+            个行程
+          </View>
         </View>
         <View className='plan-item__actions'>
+          <View
+            className='plan-item__trip'
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenTrip(plan.id)
+            }}
+          >
+            <ListOrdered size={18} color='#1a5f4a' />
+          </View>
           <View className='plan-item__more-wrap'>
             <View
               className='plan-item__more'
@@ -156,6 +169,11 @@ export default function IndexPage() {
   }
 
   const goDetail = (id: string) => {
+    setMenuId(null)
+    Taro.navigateTo({ url: `/pages/plan-detail/index?id=${id}` })
+  }
+
+  const goTrip = (id: string) => {
     setMenuId(null)
     Taro.navigateTo({ url: `/pages/trip-edit/index?id=${id}` })
   }
@@ -416,6 +434,7 @@ export default function IndexPage() {
                 setMenuId((prev) => (prev === id ? null : id))
               }
               onOpenDetail={goDetail}
+              onOpenTrip={goTrip}
               onShare={onShare}
               onEdit={goEdit}
               onDelete={onDelete}
