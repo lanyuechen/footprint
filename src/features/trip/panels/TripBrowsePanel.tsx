@@ -2,22 +2,20 @@ import { View, Text, Picker, Textarea, Input } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { useEffect, useState, type ReactNode } from 'react'
 import { AlarmClock } from 'lucide-react-taro/icons/alarm-clock'
-import { Bike } from 'lucide-react-taro/icons/bike'
-import { BusFront } from 'lucide-react-taro/icons/bus-front'
 import { EllipsisVertical } from 'lucide-react-taro/icons/ellipsis-vertical'
-import { Footprints } from 'lucide-react-taro/icons/footprints'
 import { Navigation } from 'lucide-react-taro/icons/navigation'
 import { SquarePen } from 'lucide-react-taro/icons/square-pen'
 import { Trash2 } from 'lucide-react-taro/icons/trash-2'
 import type { CollectedPlace, NavMode, TripStop } from '../../../types'
 import { updatePlaceInfo, updateStopSchedule } from '../../../services/storage'
-import { formatDistance } from '../../../utils/datetime'
+import { formatDistance, formatDuration } from '../../../utils/datetime'
 import { GroupedSortList, type SortGroup } from '../GroupedSortList'
 import {
   placeAxisMark,
   lightenColor,
   matchPlaceTypeOption,
 } from '../place-axis'
+import { navModeMeta, normalizeNavMode } from '../nav-mode'
 import { useDropdownAnim } from '../../../hooks/useDropdownAnim'
 import { useKeyboardHeight } from '../../../hooks/useKeyboardHeight'
 
@@ -26,18 +24,9 @@ export type TripStopView = TripStop & {
   collected: CollectedPlace
 }
 
-const KEY_NODE_TRAVEL_META: Record<
-  NavMode,
-  { label: string; Icon: typeof Footprints }
-> = {
-  walking: { label: '步行前往', Icon: Footprints },
-  riding: { label: '骑行前往', Icon: Bike },
-  transit: { label: '公交前往', Icon: BusFront },
-}
-
 function keyNodeTravelMeta(mode?: NavMode) {
-  if (mode === 'riding' || mode === 'transit') return KEY_NODE_TRAVEL_META[mode]
-  return KEY_NODE_TRAVEL_META.walking
+  const meta = navModeMeta(mode)
+  return { label: `${meta.label}前往`, Icon: meta.Icon }
 }
 
 /** 浏览模式 sheet 顶栏：日期 + 摘要 + 添加 */
@@ -89,7 +78,7 @@ function TripStopCard({
   onPickName,
   onPickNote,
   onStopUpdated,
-  routeDistanceByToStopId,
+  routeLegByToStopId,
   quickEditEnabled,
 }: {
   stop: TripStopView
@@ -104,8 +93,11 @@ function TripStopCard({
   onPickName: (stop: TripStopView) => void
   onPickNote: (stop: TripStopView) => void
   onStopUpdated?: () => void
-  /** 到达该关键节点的路径距离（米）；有则标签展示距离 */
-  routeDistanceByToStopId?: Record<string, number>
+  /** 到达该关键节点的路径距离 / 耗时 */
+  routeLegByToStopId?: Record<
+    string,
+    { distanceMeters: number; durationSeconds?: number }
+  >
   /** sheet 顶部时才允许点名称 / 备注快速编辑 */
   quickEditEnabled?: boolean
 }) {
@@ -115,9 +107,14 @@ function TripStopCard({
   const canQuickEdit = quickEditEnabled !== false
   const keyTravel = stop.isKeyNode ? keyNodeTravelMeta(stop.travelMode) : null
   const KeyTravelIcon = keyTravel?.Icon
-  const routeDistLabel = formatDistance(routeDistanceByToStopId?.[stop.id])
-  const travelLabel =
-    routeDistLabel || keyTravel?.label || ''
+  const leg = routeLegByToStopId?.[stop.id]
+  const routeDistLabel = formatDistance(leg?.distanceMeters)
+  const routeDurLabel = formatDuration(leg?.durationSeconds)
+  const travelLabel = routeDistLabel
+    ? routeDurLabel
+      ? `${routeDistLabel} · ${routeDurLabel}`
+      : routeDistLabel
+    : keyTravel?.label || ''
   const axis = placeAxisMark(stop.place)
   const typeOption = matchPlaceTypeOption(stop.place)
   const TypeIcon = typeOption.mark.icon
@@ -140,18 +137,18 @@ function TripStopCard({
       Taro.showToast({ title: '没有上一个节点', icon: 'none' })
       return
     }
-    const mode: NavMode =
-      stop.travelMode === 'riding' || stop.travelMode === 'transit'
-        ? stop.travelMode
-        : 'walking'
+    const mode = normalizeNavMode(stop.travelMode) || 'walking'
     const fromName = encodeURIComponent(prevStop.place.name || '起点')
+    // 车次一般写在起点备注里，用上一段起点（上一关键节点）备注匹配
+    const note = encodeURIComponent(prevStop.note?.trim() || '')
     Taro.navigateTo({
       url:
         `/pages/nav/index?placeId=${encodeURIComponent(stop.placeId)}` +
         `&fromLat=${prevStop.place.latitude}` +
         `&fromLng=${prevStop.place.longitude}` +
         `&fromName=${fromName}` +
-        `&mode=${mode}`,
+        `&mode=${mode}` +
+        (note ? `&note=${note}` : ''),
     })
   }
 
@@ -351,8 +348,11 @@ export type TripBrowseListProps = {
   onPickNote?: (stop: TripStopView) => void
   onStopUpdated?: () => void
   onRemoveDay?: () => void
-  /** 到达关键节点的路径距离（toStopId → meters） */
-  routeDistanceByToStopId?: Record<string, number>
+  /** 到达关键节点的路径距离 / 耗时（toStopId → leg） */
+  routeLegByToStopId?: Record<
+    string,
+    { distanceMeters: number; durationSeconds?: number }
+  >
   /** sheet 顶部时才允许点名称 / 备注快速编辑 */
   quickEditEnabled?: boolean
 }
@@ -374,7 +374,7 @@ export function TripBrowseList({
   onPickNote,
   onStopUpdated,
   onRemoveDay,
-  routeDistanceByToStopId,
+  routeLegByToStopId,
   quickEditEnabled = true,
 }: TripBrowseListProps) {
   const [menuId, setMenuId] = useState<string | null>(null)
@@ -419,7 +419,8 @@ export function TripBrowseList({
                 s.time || '',
                 s.isKeyNode ? '1' : '0',
                 s.travelMode || '',
-                routeDistanceByToStopId?.[s.id] ?? '',
+                routeLegByToStopId?.[s.id]?.distanceMeters ?? '',
+                routeLegByToStopId?.[s.id]?.durationSeconds ?? '',
                 quickEditEnabled ? '1' : '0',
                 s.dayIndex,
                 s.place.name,
@@ -442,7 +443,18 @@ export function TripBrowseList({
         renderItem={(stop, { dragging }) => {
           const idx = dayStops.findIndex((s) => s.id === stop.id)
           const index = Math.max(1, idx + 1)
-          const prevStop = idx > 0 ? dayStops[idx - 1] : null
+          // 关键节点导航起点：前一个关键点；若无则用当日第一点
+          let prevStop: TripStopView | null = null
+          if (idx > 0) {
+            for (let i = idx - 1; i >= 0; i--) {
+              if (dayStops[i]?.isKeyNode) {
+                prevStop = dayStops[i]!
+                break
+              }
+            }
+            if (!prevStop) prevStop = dayStops[0] || null
+            if (prevStop?.id === stop.id) prevStop = null
+          }
           return (
             <TripStopCard
               stop={stop}
@@ -471,7 +483,7 @@ export function TripBrowseList({
                 onPickNote?.(s)
               }}
               onStopUpdated={onStopUpdated}
-              routeDistanceByToStopId={routeDistanceByToStopId}
+              routeLegByToStopId={routeLegByToStopId}
               quickEditEnabled={quickEditEnabled}
             />
           )

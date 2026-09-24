@@ -17,13 +17,13 @@ import {
   matchPlaceTypeOption,
   type PlaceTypeOption,
 } from '../../features/trip/place-axis'
+import {
+  KEY_NODE_TRAVEL_MODES,
+  navModeMeta,
+  normalizeNavMode,
+} from '../../features/trip/nav-mode'
+import { useDropdownAnim } from '../../hooks/useDropdownAnim'
 import './index.scss'
-
-const KEY_NODE_TRAVEL_MODES: Array<{ id: NavMode; label: string }> = [
-  { id: 'walking', label: '步行' },
-  { id: 'transit', label: '公交' },
-  { id: 'riding', label: '骑行' },
-]
 
 type Draft = {
   name: string
@@ -52,11 +52,14 @@ function buildDraft(stop: TripStop, placeName: string): Draft {
       },
     ),
     isKeyNode: !!stop.isKeyNode,
-    travelMode:
-      stop.travelMode === 'riding' || stop.travelMode === 'transit'
-        ? stop.travelMode
-        : 'walking',
+    travelMode: normalizeNavMode(stop.travelMode) || 'walking',
   }
+}
+
+/** 按面板宽度定列数，使「图标+标题」单元格接近正方形 */
+function dropdownColumnCount(panelWidthPx: number): number {
+  const ideal = 76
+  return Math.max(3, Math.min(6, Math.round(panelWidthPx / ideal)))
 }
 
 export default function StopEditPage() {
@@ -64,7 +67,65 @@ export default function StopEditPage() {
   const [stop, setStop] = useState<TripStop | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [typeOpen, setTypeOpen] = useState(false)
+  const [modeOpen, setModeOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [dropdownPos, setDropdownPos] = useState<{
+    top: number
+    left: number
+    width: number
+    cols: number
+  } | null>(null)
+  const typeAnim = useDropdownAnim(typeOpen)
+  const modeAnim = useDropdownAnim(modeOpen)
+
+  const closeDropdowns = () => {
+    setTypeOpen(false)
+    setModeOpen(false)
+  }
+
+  const measureAndOpen = (fieldId: string, kind: 'type' | 'mode') => {
+    const query = Taro.createSelectorQuery()
+    query.select(`#${fieldId}`).boundingClientRect()
+    query.exec((res) => {
+      const rect = res?.[0] as
+        | { top?: number; bottom?: number; left?: number; width?: number }
+        | undefined
+      if (
+        rect &&
+        typeof rect.bottom === 'number' &&
+        typeof rect.left === 'number' &&
+        typeof rect.width === 'number'
+      ) {
+        setDropdownPos({
+          top: rect.bottom + 6,
+          left: rect.left,
+          width: rect.width,
+          cols: dropdownColumnCount(rect.width),
+        })
+      } else {
+        const win =
+          Taro.getWindowInfo?.().windowWidth ||
+          Taro.getSystemInfoSync().windowWidth ||
+          375
+        setDropdownPos({
+          top: 120,
+          left: 16,
+          width: Math.max(win - 32, 200),
+          cols: dropdownColumnCount(Math.max(win - 32, 200)),
+        })
+      }
+      if (kind === 'type') {
+        setModeOpen(false)
+        setTypeOpen(true)
+      } else {
+        setTypeOpen(false)
+        setModeOpen(true)
+      }
+    })
+  }
+
+  const openTypeDropdown = () => measureAndOpen('stop-edit-type-field', 'type')
+  const openModeDropdown = () => measureAndOpen('stop-edit-mode-field', 'mode')
 
   useLoad((options) => {
     const planId = options?.planId || ''
@@ -102,14 +163,8 @@ export default function StopEditPage() {
     return `${m}月${d}日 · ${week}`
   }, [dateValue, draft])
 
-  const travelModeIndex = useMemo(() => {
-    if (!draft) return 0
-    const idx = KEY_NODE_TRAVEL_MODES.findIndex((m) => m.id === draft.travelMode)
-    return idx >= 0 ? idx : 0
-  }, [draft])
-
-  const travelModeLabel =
-    KEY_NODE_TRAVEL_MODES[travelModeIndex]?.label || '步行'
+  const travelMeta = navModeMeta(draft?.travelMode)
+  const TravelIcon = travelMeta.Icon
 
   const onSave = () => {
     if (!plan || !stop || !draft || saving) return
@@ -181,20 +236,45 @@ export default function StopEditPage() {
             />
           </View>
 
-          <View className='card-edit__field'>
+          <View className='card-edit__field' id='stop-edit-type-field'>
+            <Text className='card-edit__label'>类型</Text>
+            <View
+              className='card-edit__picker'
+              onClick={() => openTypeDropdown()}
+            >
+              <View className='stop-edit__type-row'>
+                <View
+                  className='stop-edit__type-icon'
+                  style={{ backgroundColor: lightenColor(typeMark.color) }}
+                >
+                  <TypeIcon size={14} color={typeMark.color} />
+                </View>
+                <Text className='card-edit__picker-text'>
+                  {draft.typeOption.label}
+                </Text>
+              </View>
+              <Text className='card-edit__picker-hint'>选择</Text>
+            </View>
+          </View>
+
+          <View className='card-edit__field' id='stop-edit-mode-field'>
+            <Text className='card-edit__label'>出行方式</Text>
             <View className='card-edit__key-row'>
               <View
                 className='card-edit__check-hit'
                 onClick={() =>
-                  setDraft((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          isKeyNode: !prev.isKeyNode,
-                          travelMode: prev.travelMode || 'walking',
-                        }
-                      : prev,
-                  )
+                  setDraft((prev) => {
+                    if (!prev) return prev
+                    const nextKey = !prev.isKeyNode
+                    if (!nextKey) {
+                      setModeOpen(false)
+                    }
+                    return {
+                      ...prev,
+                      isKeyNode: nextKey,
+                      travelMode: prev.travelMode || 'walking',
+                    }
+                  })
                 }
               >
                 <View
@@ -206,87 +286,32 @@ export default function StopEditPage() {
                     <Text className='card-edit__check-mark'>✓</Text>
                   ) : null}
                 </View>
-                <Text className='card-edit__check-label'>关键节点</Text>
               </View>
-              {draft.isKeyNode ? (
-                <Picker
-                  mode='selector'
-                  range={KEY_NODE_TRAVEL_MODES.map((m) => m.label)}
-                  value={travelModeIndex}
-                  onChange={(e) => {
-                    const idx = Number(e.detail.value)
-                    const mode = KEY_NODE_TRAVEL_MODES[idx]?.id || 'walking'
-                    setDraft((prev) =>
-                      prev ? { ...prev, travelMode: mode } : prev,
-                    )
-                  }}
-                >
-                  <View className='card-edit__picker card-edit__picker--compact'>
-                    <Text className='card-edit__picker-text'>
-                      {travelModeLabel}
-                    </Text>
-                    <Text className='card-edit__picker-hint'>选择</Text>
+              <View
+                className={`card-edit__picker card-edit__picker--compact${
+                  draft.isKeyNode ? '' : ' card-edit__picker--disabled'
+                }`}
+                onClick={() => {
+                  if (!draft.isKeyNode) return
+                  openModeDropdown()
+                }}
+              >
+                <View className='stop-edit__type-row'>
+                  <View
+                    className='stop-edit__type-icon'
+                    style={{
+                      backgroundColor: lightenColor(travelMeta.color),
+                    }}
+                  >
+                    <TravelIcon size={14} color={travelMeta.color} />
                   </View>
-                </Picker>
-              ) : null}
-            </View>
-          </View>
-
-          <View className='card-edit__field'>
-            <Text className='card-edit__label'>类型</Text>
-            <View
-              className='card-edit__picker'
-              onClick={() => setTypeOpen((v) => !v)}
-            >
-              <View className='stop-edit__type-row'>
-                <View
-                  className='stop-edit__type-icon'
-                  style={{ backgroundColor: lightenColor(typeMark.color) }}
-                >
-                  <TypeIcon size={18} color={typeMark.color} />
+                  <Text className='card-edit__picker-text'>
+                    {travelMeta.label}
+                  </Text>
                 </View>
-                <Text className='card-edit__picker-text'>
-                  {draft.typeOption.label}
-                </Text>
+                <Text className='card-edit__picker-hint'>选择</Text>
               </View>
-              <Text className='card-edit__picker-hint'>
-                {typeOpen ? '收起' : '选择'}
-              </Text>
             </View>
-            {typeOpen ? (
-              <View className='type-grid'>
-                {PLACE_TYPE_OPTIONS.map((opt) => {
-                  const on =
-                    opt.typecode === draft.typeOption.typecode &&
-                    opt.label === draft.typeOption.label
-                  const Icon = opt.mark.icon
-                  return (
-                    <View
-                      key={`${opt.typecode}-${opt.label}`}
-                      className={`type-grid__item${
-                        on ? ' type-grid__item--on' : ''
-                      }`}
-                      onClick={() => {
-                        setDraft((prev) =>
-                          prev ? { ...prev, typeOption: opt } : prev,
-                        )
-                        setTypeOpen(false)
-                      }}
-                    >
-                      <View
-                        className='type-grid__icon'
-                        style={{
-                          backgroundColor: lightenColor(opt.mark.color),
-                        }}
-                      >
-                        <Icon size={18} color={opt.mark.color} />
-                      </View>
-                      <Text className='type-grid__label'>{opt.label}</Text>
-                    </View>
-                  )
-                })}
-              </View>
-            ) : null}
           </View>
 
           <View className='card-edit__field'>
@@ -297,15 +322,9 @@ export default function StopEditPage() {
               start={plan.startDate}
               end={dateEnd}
               onChange={(e) => {
-                const next = String(e.detail.value || '')
-                if (!next) return
+                const next = dayIndexOfDate(plan.startDate, e.detail.value)
                 setDraft((prev) =>
-                  prev
-                    ? {
-                        ...prev,
-                        dayIndex: dayIndexOfDate(plan.startDate, next),
-                      }
-                    : prev,
+                  prev ? { ...prev, dayIndex: next } : prev,
                 )
               }}
             >
@@ -321,10 +340,11 @@ export default function StopEditPage() {
             <Picker
               mode='time'
               value={draft.time || '09:00'}
-              onChange={(e) => {
-                const next = String(e.detail.value || '')
-                setDraft((prev) => (prev ? { ...prev, time: next } : prev))
-              }}
+              onChange={(e) =>
+                setDraft((prev) =>
+                  prev ? { ...prev, time: e.detail.value } : prev,
+                )
+              }
             >
               <View className='card-edit__picker'>
                 <Text className='card-edit__picker-text'>
@@ -333,7 +353,7 @@ export default function StopEditPage() {
                 <Text className='card-edit__picker-hint'>选择</Text>
               </View>
             </Picker>
-            {!!draft.time && (
+            {draft.time ? (
               <Text
                 className='card-edit__clear'
                 onClick={() =>
@@ -342,7 +362,7 @@ export default function StopEditPage() {
               >
                 清除时间
               </Text>
-            )}
+            ) : null}
           </View>
 
           <View className='card-edit__field'>
@@ -350,8 +370,8 @@ export default function StopEditPage() {
             <Textarea
               className='card-edit__textarea'
               value={draft.note}
-              maxlength={2000}
-              placeholder='开放时间、门票、怎么走等'
+              maxlength={200}
+              placeholder='可选'
               autoHeight
               onInput={(e) =>
                 setDraft((prev) =>
@@ -364,7 +384,10 @@ export default function StopEditPage() {
       </ScrollView>
 
       <View className='stop-edit__actions'>
-        <View className='stop-edit__btn stop-edit__btn--ghost' onClick={() => Taro.navigateBack()}>
+        <View
+          className='stop-edit__btn stop-edit__btn--ghost'
+          onClick={() => Taro.navigateBack()}
+        >
           取消
         </View>
         <View
@@ -376,6 +399,125 @@ export default function StopEditPage() {
           {saving ? '保存中…' : '保存'}
         </View>
       </View>
+
+      {(typeAnim.mounted || modeAnim.mounted) && (
+        <View
+          className={`form-dropdown-mask${
+            typeAnim.shown || modeAnim.shown ? ' form-dropdown-mask--open' : ''
+          }`}
+          onClick={closeDropdowns}
+        />
+      )}
+
+      {typeAnim.mounted ? (
+        <View
+          className={`form-dropdown form-dropdown--type${
+            typeAnim.shown ? ' form-dropdown--open' : ''
+          }`}
+          style={
+            dropdownPos
+              ? {
+                  top: `${dropdownPos.top}px`,
+                  left: `${dropdownPos.left}px`,
+                  width: `${dropdownPos.width}px`,
+                }
+              : undefined
+          }
+        >
+          <View
+            className={`form-dropdown__grid form-dropdown__grid--cols-${
+              dropdownPos?.cols || 4
+            }`}
+          >
+            {PLACE_TYPE_OPTIONS.map((opt) => {
+              const on = opt.typecode === draft.typeOption.typecode
+              const MarkIcon = opt.mark.icon
+              return (
+                <View
+                  key={`${opt.typecode}-${opt.label}`}
+                  className={`form-dropdown__item${
+                    on ? ' form-dropdown__item--on' : ''
+                  }`}
+                  onClick={() => {
+                    setDraft((prev) =>
+                      prev ? { ...prev, typeOption: opt } : prev,
+                    )
+                    closeDropdowns()
+                  }}
+                >
+                  <View
+                    className='form-dropdown__icon'
+                    style={{
+                      backgroundColor: lightenColor(opt.mark.color),
+                    }}
+                  >
+                    <MarkIcon size={16} color={opt.mark.color} />
+                  </View>
+                  <Text className='form-dropdown__label'>{opt.label}</Text>
+                </View>
+              )
+            })}
+          </View>
+        </View>
+      ) : null}
+
+      {modeAnim.mounted ? (
+        <View
+          className={`form-dropdown form-dropdown--mode${
+            modeAnim.shown ? ' form-dropdown--open' : ''
+          }`}
+          style={
+            dropdownPos
+              ? {
+                  top: `${dropdownPos.top}px`,
+                  left: `${dropdownPos.left}px`,
+                  width: `${dropdownPos.width}px`,
+                }
+              : undefined
+          }
+        >
+          <View
+            className={`form-dropdown__grid form-dropdown__grid--cols-${
+              dropdownPos?.cols || 4
+            }`}
+          >
+            {KEY_NODE_TRAVEL_MODES.map((item) => {
+              const on = draft.travelMode === item.id && draft.isKeyNode
+              const Icon = item.Icon
+              return (
+                <View
+                  key={item.id}
+                  className={`form-dropdown__item${
+                    on ? ' form-dropdown__item--on' : ''
+                  }`}
+                  onClick={() => {
+                    setDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            isKeyNode: true,
+                            travelMode: item.id,
+                          }
+                        : prev,
+                    )
+                    closeDropdowns()
+                  }}
+                >
+                  <View
+                    className='form-dropdown__icon'
+                    style={{
+                      backgroundColor: lightenColor(item.color),
+                    }}
+                  >
+                    <Icon size={16} color={item.color} />
+                  </View>
+                  <Text className='form-dropdown__label'>{item.label}</Text>
+                </View>
+              )
+            })}
+          </View>
+        </View>
+      ) : null}
     </View>
   )
 }

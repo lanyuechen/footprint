@@ -139,7 +139,6 @@
   &__key-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 16px;
   }
 
@@ -147,7 +146,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    min-width: 0;
+    flex-shrink: 0;
   }
 
   &__check {
@@ -173,46 +172,99 @@
     line-height: 1;
   }
 
-  &__check-label {
-    font-size: 28px;
-    color: #1f2329;
-  }
-
   &__picker--compact {
     flex: 1;
     min-width: 0;
-    min-height: 64px;
+  }
+
+  &__picker--disabled {
+    opacity: 0.45;
+    pointer-events: none;
   }
 }
 
-.type-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px 12px;
-  padding: 8px 0 8px;
+.form-dropdown-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+
+  &--open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.form-dropdown {
+  position: fixed;
+  z-index: 42;
+  max-height: 56vh;
+  padding: 16px 12px;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 8px 28px rgba(15, 23, 20, 0.14);
+  box-sizing: border-box;
+  overflow-y: auto;
+  opacity: 0;
+  transform: translateY(-8px);
+  transform-origin: top center;
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+
+  &--open {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+
+  &__grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+
+    &--cols-3 .form-dropdown__item {
+      width: calc((100% - 16px) / 3);
+    }
+
+    &--cols-4 .form-dropdown__item {
+      width: calc((100% - 24px) / 4);
+    }
+
+    &--cols-5 .form-dropdown__item {
+      width: calc((100% - 32px) / 5);
+    }
+
+    &--cols-6 .form-dropdown__item {
+      width: calc((100% - 40px) / 6);
+    }
+  }
 
   &__item {
-    width: calc((100% - 36px) / 4);
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     gap: 8px;
-    padding: 12px 4px;
+    padding: 10px 2px;
     border-radius: 12px;
     border: 2px solid transparent;
-    background: #fff;
 
     &--on {
-      background: #e8f2ee;
       border-color: #1a5f4a;
+      background: #e8f2ee;
     }
   }
 
   &__icon {
-    width: 56px;
-    height: 56px;
-    border-radius: 28px;
+    width: 48px;
+    height: 48px;
+    border-radius: 24px;
     display: flex;
     align-items: center;
     justify-content: center;

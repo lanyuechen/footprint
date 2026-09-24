@@ -154,7 +154,7 @@ export default function TripEditPage() {
     setPlan(p)
     setPlaces(listAllPlacesByPlan(id))
     setStops(listStopsByPlan(id))
-    Taro.setNavigationBarTitle({ title: '行程编辑' })
+    Taro.setNavigationBarTitle({ title: p.name.trim() || '行程编辑' })
   }
 
   const refreshPlanMeta = (id: string) => {
@@ -164,6 +164,7 @@ export default function TripEditPage() {
       return
     }
     setPlan(p)
+    Taro.setNavigationBarTitle({ title: p.name.trim() || '行程编辑' })
   }
 
   useLoad((options) => {

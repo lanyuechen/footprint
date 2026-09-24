@@ -50,7 +50,14 @@ export interface CollectedPlace {
   extra?: Record<string, unknown>
 }
 
-export type NavMode = 'walking' | 'riding' | 'transit'
+export type NavMode =
+  | 'walking'
+  | 'riding'
+  | 'driving'
+  | 'bus'
+  | 'metro'
+  | 'flight'
+  | 'rail'
 
 /**
  * 行程点：对收藏地点的一次引用
@@ -64,12 +71,12 @@ export interface TripStop {
   dayIndex: number
   /** 可选到访时刻 HH:mm；默认空，设置后才展示 */
   time?: string
-  /** 该次行程的纯文本备注 */
-  note?: string
   /** 关键节点：用于分段导航等 */
   isKeyNode?: boolean
-  /** 前往该关键节点的方式；仅 isKeyNode 时有意义，默认 walking */
+  /** 上一关键节点 → 本节点的出行方式；仅 isKeyNode 时有意义 */
   travelMode?: NavMode
+  /** 该次行程的纯文本备注（火车车次等通常写在起点） */
+  note?: string
   extra?: Record<string, unknown>
 }
 
@@ -119,7 +126,14 @@ export interface AmapPoi {
   biz_ext?: Record<string, unknown>
 }
 
-export type NavStepKind = 'walk' | 'ride' | 'bus' | 'metro' | 'railway' | 'other'
+export type NavStepKind =
+  | 'walk'
+  | 'ride'
+  | 'drive'
+  | 'bus'
+  | 'metro'
+  | 'railway'
+  | 'other'
 
 export interface NavRoutePoint {
   latitude: number
@@ -130,6 +144,8 @@ export interface NavRouteStep {
   kind: NavStepKind
   title: string
   detail?: string
+  /** 火车/高铁车次，如 G123 */
+  tripNo?: string
   distanceMeters?: number
   durationSeconds?: number
   points?: NavRoutePoint[]

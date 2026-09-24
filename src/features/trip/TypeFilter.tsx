@@ -172,7 +172,7 @@ export function TypeFilter({
                   关闭
                 </Text>
               </View>
-              <View className='type-filter__grid type-filter__grid--map'>
+              <View className='type-filter__grid'>
                 <View className='type-filter__item type-filter__item--locked'>
                   <View
                     className='type-filter__icon'

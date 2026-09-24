@@ -1,31 +1,27 @@
 import type { NavMode, TripStop } from '../../types'
-import { planRoute } from '../../services/amap'
+import {
+  buildFlightArcPoints,
+  buildStraightLinePoints,
+  distanceMeters,
+  planRoute,
+} from '../../services/amap'
 import { formatDistance } from '../../utils/datetime'
 import { MARKER_ID_ROUTE_DIST } from '../../components/sheet-map'
 import { NUMBERED_DOT_FALLBACK } from './numbered-dot-markers'
+import { isDashNavMode, navModeMeta, normalizeNavMode } from './nav-mode'
 
 export type KeyNodeRouteSegment = {
   fromStopId: string
   toStopId: string
   mode: NavMode
   distanceMeters: number
+  /** 规划耗时（秒）；示意段可能为估算值 */
+  durationSeconds?: number
   points: Array<{ latitude: number; longitude: number }>
 }
 
-const MODE_LINE_COLOR: Record<NavMode, string> = {
-  walking: '#1a5f4a',
-  riding: '#0ea5e9',
-  transit: '#f97316',
-}
-
-const MODE_LABEL: Record<NavMode, string> = {
-  walking: '步行',
-  riding: '骑行',
-  transit: '公交',
-}
-
 export function keyNodeRouteLineColor(mode: NavMode): string {
-  return MODE_LINE_COLOR[mode] || MODE_LINE_COLOR.walking
+  return navModeMeta(mode).color
 }
 
 type KeyNodeRouteJob = {
@@ -91,7 +87,11 @@ function isRateLimitError(err: unknown): boolean {
 
 function segmentFromRoute(
   job: KeyNodeRouteJob,
-  route: { distanceMeters?: number; points: KeyNodeRouteSegment['points'] },
+  route: {
+    distanceMeters?: number
+    durationSeconds?: number
+    points: KeyNodeRouteSegment['points']
+  },
 ): KeyNodeRouteSegment | null {
   const points =
     route.points.length >= 2
@@ -107,11 +107,46 @@ function segmentFromRoute(
           },
         ]
   if (points.length < 2) return null
+  const durationSeconds =
+    route.durationSeconds != null && route.durationSeconds > 0
+      ? Math.round(route.durationSeconds)
+      : undefined
   return {
     fromStopId: job.fromStopId,
     toStopId: job.toStopId,
     mode: job.mode,
     distanceMeters: Math.max(0, Math.round(route.distanceMeters || 0)),
+    ...(durationSeconds ? { durationSeconds } : {}),
+    points,
+  }
+}
+
+function buildFlightSegment(job: KeyNodeRouteJob): KeyNodeRouteSegment {
+  const dist = Math.round(distanceMeters(job.origin, job.destination))
+  const points = buildFlightArcPoints(job.origin, job.destination)
+  // 粗估巡航 ~800km/h
+  const durationSeconds = Math.max(600, Math.round((dist / 1000 / 800) * 3600))
+  return {
+    fromStopId: job.fromStopId,
+    toStopId: job.toStopId,
+    mode: 'flight',
+    distanceMeters: dist,
+    durationSeconds,
+    points,
+  }
+}
+
+function buildRailSegment(job: KeyNodeRouteJob): KeyNodeRouteSegment {
+  const dist = Math.round(distanceMeters(job.origin, job.destination))
+  const points = buildStraightLinePoints(job.origin, job.destination)
+  // 粗估高铁 ~250km/h
+  const durationSeconds = Math.max(600, Math.round((dist / 1000 / 250) * 3600))
+  return {
+    fromStopId: job.fromStopId,
+    toStopId: job.toStopId,
+    mode: 'rail',
+    distanceMeters: dist,
+    durationSeconds,
     points,
   }
 }
@@ -140,7 +175,7 @@ async function mapPool<T, R>(
   return results
 }
 
-/** 按当日行程顺序，取关键节点并生成相邻段（终点节点的前往方式） */
+/** 按当日行程顺序生成关键节点路径段；无前置关键点时用当日第一点作起点 */
 export function buildKeyNodeRouteJobs(
   dayStops: Array<
     Pick<TripStop, 'id' | 'isKeyNode' | 'travelMode'> & {
@@ -148,16 +183,22 @@ export function buildKeyNodeRouteJobs(
     }
   >,
 ): KeyNodeRouteJob[] {
+  if (dayStops.length === 0) return []
+  const first = dayStops[0]!
   const keyNodes = dayStops.filter((s) => s.isKeyNode)
-  if (keyNodes.length < 2) return []
+  if (keyNodes.length === 0) return []
+
   const jobs: KeyNodeRouteJob[] = []
-  for (let i = 1; i < keyNodes.length; i++) {
-    const from = keyNodes[i - 1]!
-    const to = keyNodes[i]!
-    const mode: NavMode =
-      to.travelMode === 'riding' || to.travelMode === 'transit'
-        ? to.travelMode
-        : 'walking'
+  let prevKey:
+    | (typeof dayStops)[number]
+    | null = null
+
+  for (const to of keyNodes) {
+    const from = prevKey ?? first
+    prevKey = to
+    // 当日第一点本身就是关键点时，没有「前往它」的前一段
+    if (from.id === to.id) continue
+    const mode = normalizeNavMode(to.travelMode) || 'walking'
     jobs.push({
       fromStopId: from.id,
       toStopId: to.id,
@@ -187,6 +228,18 @@ async function planOneJob(
       fromStopId: job.fromStopId,
       toStopId: job.toStopId,
     }
+  }
+
+  if (job.mode === 'flight') {
+    const seg = buildFlightSegment(job)
+    routeSegmentCache.set(cacheKey, seg)
+    return seg
+  }
+
+  if (job.mode === 'rail') {
+    const seg = buildRailSegment(job)
+    routeSegmentCache.set(cacheKey, seg)
+    return seg
   }
 
   for (let attempt = 0; attempt <= ROUTE_RETRY_MAX; attempt++) {
@@ -227,13 +280,16 @@ export async function planKeyNodeRouteSegments(
 }
 
 export function keyNodeSegmentsToPolylines(segments: KeyNodeRouteSegment[]) {
-  return segments.map((seg) => ({
-    points: seg.points,
-    color: keyNodeRouteLineColor(seg.mode),
-    width: 6,
-    dottedLine: false,
-    arrowLine: true,
-  }))
+  return segments.map((seg) => {
+    const dash = isDashNavMode(seg.mode)
+    return {
+      points: seg.points,
+      color: keyNodeRouteLineColor(seg.mode),
+      width: dash ? 5 : 6,
+      dottedLine: dash,
+      arrowLine: !dash,
+    }
+  })
 }
 
 function segmentMidpoint(
@@ -253,8 +309,7 @@ export function keyNodeSegmentsToDistanceMarkers(
       const dist = formatDistance(seg.distanceMeters)
       if (!dist || seg.points.length < 2) return null
       const mid = segmentMidpoint(seg.points)
-      const color = keyNodeRouteLineColor(seg.mode)
-      const modeLabel = MODE_LABEL[seg.mode] || MODE_LABEL.walking
+      const meta = navModeMeta(seg.mode)
       return {
         id: MARKER_ID_ROUTE_DIST + index,
         latitude: mid.latitude,
@@ -266,8 +321,8 @@ export function keyNodeSegmentsToDistanceMarkers(
         // 高于行程点（10/20），保证距离 callout 不被遮挡
         zIndex: 100,
         callout: {
-          content: `${modeLabel} ${dist}`,
-          color,
+          content: `${meta.label} ${dist}`,
+          color: meta.color,
           fontSize: 11,
           borderRadius: 6,
           borderWidth: 1,

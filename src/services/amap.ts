@@ -9,6 +9,12 @@ import type {
   PlaceBusiness,
   PlaceInfo,
 } from '../types'
+import {
+  extractTripHints,
+  isTransitNavMode,
+  normalizeNavMode,
+  transitStrategyForMode,
+} from '../features/trip/nav-mode'
 
 export interface UserLocation {
   latitude: number
@@ -775,13 +781,17 @@ export function getAmapMapKey(): string {
 export const NAV_MODES: Array<{ id: NavMode; label: string }> = [
   { id: 'walking', label: '步行' },
   { id: 'riding', label: '骑行' },
-  { id: 'transit', label: '公交' },
+  { id: 'driving', label: '驾驶' },
+  { id: 'bus', label: '公交' },
+  { id: 'metro', label: '地铁' },
+  { id: 'rail', label: '高铁' },
+  { id: 'flight', label: '飞机' },
 ]
 
 export function getLastNavMode(): NavMode {
   try {
     const raw = Taro.getStorageSync(STORAGE_KEYS.LAST_NAV_MODE)
-    if (raw === 'walking' || raw === 'riding' || raw === 'transit') return raw
+    return normalizeNavMode(raw) || 'walking'
   } catch {
     // ignore
   }
@@ -790,7 +800,8 @@ export function getLastNavMode(): NavMode {
 
 export function setLastNavMode(mode: NavMode) {
   try {
-    Taro.setStorageSync(STORAGE_KEYS.LAST_NAV_MODE, mode)
+    const next = normalizeNavMode(mode) || 'walking'
+    Taro.setStorageSync(STORAGE_KEYS.LAST_NAV_MODE, next)
   } catch {
     // ignore
   }
@@ -889,11 +900,37 @@ function mockRoute(
   origin: UserLocation,
   destination: UserLocation,
 ): NavRoute {
+  if (mode === 'flight') return buildFlightRoute(origin, destination)
+  if (mode === 'rail') return buildRailRoute(origin, destination)
   const dist = distanceMeters(origin, destination)
   const speed =
-    mode === 'walking' ? 1.3 : mode === 'riding' ? 4 : 6 // m/s 粗估
-  const kind = mode === 'walking' ? 'walk' : mode === 'riding' ? 'ride' : 'bus'
-  const label = mode === 'walking' ? '步行' : mode === 'riding' ? '骑行' : '前往'
+    mode === 'walking'
+      ? 1.3
+      : mode === 'riding'
+        ? 4
+        : mode === 'driving'
+          ? 12
+          : 6 // m/s 粗估
+  const kind =
+    mode === 'walking'
+      ? 'walk'
+      : mode === 'riding'
+        ? 'ride'
+        : mode === 'driving'
+          ? 'drive'
+          : mode === 'metro'
+            ? 'metro'
+            : 'bus'
+  const label =
+    mode === 'walking'
+      ? '步行'
+      : mode === 'riding'
+        ? '骑行'
+        : mode === 'driving'
+          ? '驾驶'
+          : mode === 'metro'
+            ? '地铁'
+            : '公交'
   const mid = {
     latitude: (origin.latitude + destination.latitude) / 2,
     longitude: (origin.longitude + destination.longitude) / 2,
@@ -930,6 +967,193 @@ function mockRoute(
       },
     ],
   }
+}
+
+/** 飞机：大圆弧示意折线（不走高德） */
+export function buildFlightArcPoints(
+  origin: UserLocation,
+  destination: UserLocation,
+  segments = 36,
+): NavRoutePoint[] {
+  const lat1 = origin.latitude
+  const lng1 = origin.longitude
+  const lat2 = destination.latitude
+  const lng2 = destination.longitude
+  const midLat = (lat1 + lat2) / 2
+  const midLng = (lng1 + lng2) / 2
+  const dLat = lat2 - lat1
+  const dLng = lng2 - lng1
+  const dist = distanceMeters(origin, destination)
+  // 弯曲幅度随距离略增，并限制过大偏移
+  const bend =
+    Math.min(0.22, 0.08 + dist / 2_500_000) *
+    (Math.abs(dLng) + Math.abs(dLat) > 1e-8 ? 1 : 0)
+  const cLat = midLat - dLng * bend
+  const cLng = midLng + dLat * bend
+  const points: NavRoutePoint[] = []
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments
+    const u = 1 - t
+    points.push({
+      latitude: u * u * lat1 + 2 * u * t * cLat + t * t * lat2,
+      longitude: u * u * lng1 + 2 * u * t * cLng + t * t * lng2,
+    })
+  }
+  return points
+}
+
+export function buildFlightRoute(
+  origin: UserLocation,
+  destination: UserLocation,
+): NavRoute {
+  const dist = Math.round(distanceMeters(origin, destination))
+  const points = buildFlightArcPoints(origin, destination)
+  // 粗估巡航速度 ~800km/h
+  const durationSeconds = Math.max(600, Math.round((dist / 1000 / 800) * 3600))
+  return {
+    mode: 'flight',
+    distanceMeters: dist,
+    durationSeconds,
+    points,
+    summary: '弧线示意（非航线）',
+    steps: [
+      {
+        kind: 'other',
+        title: '飞行示意',
+        detail: '关键节点飞机模式不调用路径规划，按两点弧线示意',
+        distanceMeters: dist,
+        durationSeconds,
+        points,
+        color: stepColorAt(0),
+      },
+    ],
+  }
+}
+
+/** 高铁：两点直线示意（不走高德画轨） */
+export function buildStraightLinePoints(
+  origin: UserLocation,
+  destination: UserLocation,
+): NavRoutePoint[] {
+  return [
+    { latitude: origin.latitude, longitude: origin.longitude },
+    { latitude: destination.latitude, longitude: destination.longitude },
+  ]
+}
+
+export function buildRailRoute(
+  origin: UserLocation,
+  destination: UserLocation,
+  extras?: { summary?: string; steps?: NavRouteStep[] },
+): NavRoute {
+  const dist = Math.round(distanceMeters(origin, destination))
+  const points = buildStraightLinePoints(origin, destination)
+  // 粗估高铁 ~250km/h
+  const durationSeconds = Math.max(600, Math.round((dist / 1000 / 250) * 3600))
+  const steps =
+    extras?.steps && extras.steps.length > 0
+      ? extras.steps.map((s, i) => ({
+          ...s,
+          points: s.points && s.points.length >= 2 ? s.points : points,
+          color: s.color || stepColorAt(i),
+        }))
+      : [
+          {
+            kind: 'railway' as const,
+            title: '高铁示意',
+            detail: '直线虚线示意，非真实轨道路径',
+            distanceMeters: dist,
+            durationSeconds,
+            points,
+            color: stepColorAt(0),
+          },
+        ]
+  return {
+    mode: 'rail',
+    distanceMeters: dist,
+    durationSeconds:
+      extras?.steps?.[0]?.durationSeconds || durationSeconds,
+    points,
+    summary: extras?.summary || '直线示意（非铁轨）',
+    steps,
+  }
+}
+
+function railwayTripNo(railway: {
+  trip?: unknown
+  name?: unknown
+}): string {
+  const trip = asText(railway.trip).toUpperCase()
+  if (trip) return trip
+  const fromName = extractTripHints(asText(railway.name))
+  return fromName[0] || ''
+}
+
+function stopLocation(stop: unknown): NavRoutePoint | null {
+  if (!stop || typeof stop !== 'object') return null
+  const loc = asText((stop as { location?: unknown }).location)
+  if (!loc) return null
+  const [lngStr, latStr] = loc.split(',')
+  const longitude = Number(lngStr)
+  const latitude = Number(latStr)
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null
+  return { latitude, longitude }
+}
+
+function routeTripNos(route: NavRoute): string[] {
+  const out: string[] = []
+  for (const s of route.steps) {
+    if (s.tripNo) out.push(s.tripNo.toUpperCase())
+  }
+  return out
+}
+
+function scoreRouteByTripHints(route: NavRoute, hints: string[]): number {
+  if (hints.length === 0) return 0
+  const trips = routeTripNos(route)
+  if (trips.length === 0) return 0
+  let score = 0
+  for (const h of hints) {
+    if (trips.some((t) => t === h || t.includes(h) || h.includes(t))) score += 10
+  }
+  // 有火车段但无匹配
+  if (score === 0 && route.steps.some((s) => s.kind === 'railway')) score = 1
+  return score
+}
+
+function preferRoutesByTripNote(list: NavRoute[], note?: string): NavRoute[] {
+  const hints = extractTripHints(note)
+  if (hints.length === 0 || list.length === 0) return list
+  return [...list].sort((a, b) => {
+    const sa = scoreRouteByTripHints(a, hints)
+    const sb = scoreRouteByTripHints(b, hints)
+    return sb - sa || a.durationSeconds - b.durationSeconds
+  })
+}
+
+function railRouteFromTransit(
+  scheme: NavRoute,
+  origin: UserLocation,
+  destination: UserLocation,
+): NavRoute {
+  const railSteps = scheme.steps.filter((s) => s.kind === 'railway')
+  const tripLabel = railSteps
+    .map((s) => s.tripNo)
+    .filter(Boolean)
+    .join(' / ')
+  const summaryParts = [
+    tripLabel || undefined,
+    scheme.summary,
+  ].filter(Boolean)
+  return buildRailRoute(origin, destination, {
+    summary: summaryParts.join(' · ') || scheme.summary,
+    steps:
+      railSteps.length > 0
+        ? railSteps
+        : scheme.steps.length > 0
+          ? scheme.steps
+          : undefined,
+  })
 }
 
 async function requestJson(url: string): Promise<Record<string, unknown>> {
@@ -998,7 +1222,8 @@ function parseOneWalkingOrRidingPath(
 ): NavRoute | null {
   const points: NavRoutePoint[] = []
   const steps: NavRouteStep[] = []
-  const kind = mode === 'walking' ? 'walk' : 'ride'
+  const kind =
+    mode === 'walking' ? 'walk' : mode === 'driving' ? 'drive' : 'ride'
 
   for (const step of path.steps || []) {
     const segPts = collectPolylinePoints(step.polyline)
@@ -1061,6 +1286,7 @@ function parseOneTransit(
     duration?: unknown
     segments?: Array<Record<string, unknown>>
   },
+  mode: NavMode = 'bus',
 ): NavRoute | null {
   const points: NavRoutePoint[] = []
   const lineNames: string[] = []
@@ -1146,24 +1372,45 @@ function parseOneTransit(
       | {
           polyline?: unknown
           name?: unknown
+          trip?: unknown
+          type?: unknown
           distance?: unknown
           time?: unknown
           departure_stop?: unknown
           arrival_stop?: unknown
         }
       | undefined
-    if (railway && (asText(railway.name) || railway.polyline)) {
-      const railPts = collectPolylinePoints(railway.polyline)
+    if (railway && (asText(railway.name) || asText(railway.trip) || railway.polyline)) {
+      let railPts = collectPolylinePoints(railway.polyline)
+      if (railPts.length < 2) {
+        const depLoc = stopLocation(railway.departure_stop)
+        const arrLoc = stopLocation(railway.arrival_stop)
+        if (depLoc && arrLoc) railPts = [depLoc, arrLoc]
+      }
       appendPolyline(points, railway.polyline)
+      if (railPts.length >= 2 && points.length < 2) {
+        points.push(...railPts)
+      }
+      const tripNo = railwayTripNo(railway)
       const name = asText(railway.name)
-      if (name) lineNames.push(name)
+      if (tripNo) lineNames.push(tripNo)
+      else if (name) lineNames.push(name)
       const dep = asStopName(railway.departure_stop)
       const arr = asStopName(railway.arrival_stop)
+      const detailParts: string[] = []
+      if (dep && arr) detailParts.push(`${dep} → ${arr}`)
+      else if (dep) detailParts.push(dep)
+      else if (arr) detailParts.push(arr)
+      if (name && tripNo && !name.includes(tripNo)) detailParts.push(name)
       steps.push({
         kind: 'railway',
-        title: name ? `乘坐${name}` : '乘坐火车',
-        detail:
-          dep && arr ? `${dep} → ${arr}` : dep || arr || undefined,
+        title: tripNo
+          ? `乘坐${tripNo}`
+          : name
+            ? `乘坐${name}`
+            : '乘坐火车',
+        detail: detailParts.length > 0 ? detailParts.join('，') : undefined,
+        tripNo: tripNo || undefined,
         distanceMeters: Math.round(toNumber(railway.distance)) || undefined,
         durationSeconds: Math.round(toNumber(railway.time)) || undefined,
         points: railPts.length >= 2 ? railPts : undefined,
@@ -1172,9 +1419,28 @@ function parseOneTransit(
     }
   }
 
+  if (points.length < 2) {
+    for (const s of steps) {
+      if (!s.points) continue
+      for (const p of s.points) {
+        if (points.length === 0) {
+          points.push(p)
+          continue
+        }
+        const last = points[points.length - 1]!
+        if (
+          Math.abs(last.latitude - p.latitude) > 1e-7 ||
+          Math.abs(last.longitude - p.longitude) > 1e-7
+        ) {
+          points.push(p)
+        }
+      }
+    }
+  }
+
   if (points.length < 2) return null
   return {
-    mode: 'transit',
+    mode: isTransitNavMode(mode) ? mode : mode === 'rail' ? 'rail' : 'bus',
     distanceMeters: Math.round(toNumber(best.distance)),
     durationSeconds: Math.round(toNumber(best.duration)),
     points,
@@ -1183,21 +1449,39 @@ function parseOneTransit(
   }
 }
 
-function parseTransitSchemes(route: Record<string, unknown>): NavRoute[] {
+function transitMetroDistance(route: NavRoute): number {
+  return route.steps
+    .filter((s) => s.kind === 'metro')
+    .reduce((sum, s) => sum + (s.distanceMeters || 0), 0)
+}
+
+function parseTransitSchemes(
+  route: Record<string, unknown>,
+  mode: NavMode = 'bus',
+): NavRoute[] {
   const transits = route.transits
   if (!Array.isArray(transits) || transits.length === 0) return []
   const list: NavRoute[] = []
-  for (const raw of transits.slice(0, MAX_ROUTE_SCHEMES)) {
+  for (const raw of transits.slice(0, Math.max(MAX_ROUTE_SCHEMES, 5))) {
     const parsed = parseOneTransit(
       raw as {
         distance?: unknown
         duration?: unknown
         segments?: Array<Record<string, unknown>>
       },
+      mode,
     )
     if (parsed) list.push(parsed)
   }
-  return list
+  // 地铁优先：地铁里程多的方案排前；公交优先：地铁里程少的排前
+  list.sort((a, b) => {
+    const da = transitMetroDistance(a)
+    const db = transitMetroDistance(b)
+    if (mode === 'metro') return db - da || a.durationSeconds - b.durationSeconds
+    if (mode === 'bus') return da - db || a.durationSeconds - b.durationSeconds
+    return a.durationSeconds - b.durationSeconds
+  })
+  return list.slice(0, MAX_ROUTE_SCHEMES)
 }
 
 function mockRoutes(
@@ -1224,21 +1508,58 @@ function mockRoutes(
 /**
  * 规划多套路线方案（最多 3 套）。
  * 公交需城市参数，内部会逆地理起点城市。
+ * 高铁：地图为直线虚线；车次匹配用起点备注（options.note，一般来自上一段关键节点）。
  */
 export async function planRoutes(
   mode: NavMode,
   origin: UserLocation,
   destination: UserLocation,
+  options?: { note?: string },
 ): Promise<NavRoute[]> {
+  const resolved = normalizeNavMode(mode) || 'walking'
   const key = AMAP_CONFIG.webServiceKey
   if (isPlaceholderKey(key)) {
-    return mockRoutes(mode, origin, destination)
+    return mockRoutes(resolved, origin, destination)
   }
 
   const o = formatLocation(origin)
   const d = formatLocation(destination)
 
-  if (mode === 'walking') {
+  if (resolved === 'flight') {
+    return [buildFlightRoute(origin, destination)]
+  }
+
+  if (resolved === 'rail') {
+    const fallback = buildRailRoute(origin, destination)
+    try {
+      const city = await reverseCity(origin, key)
+      const cityd = await reverseCity(destination, key)
+      const url =
+        `https://restapi.amap.com/v3/direction/transit/integrated?key=${encodeURIComponent(key)}` +
+        `&origin=${o}&destination=${d}` +
+        `&city=${encodeURIComponent(city)}` +
+        `&cityd=${encodeURIComponent(cityd)}` +
+        `&strategy=0&nightflag=0&extensions=all`
+      const data = await requestJson(url)
+      if (String(data.status ?? '') !== '1') return [fallback]
+      const route = data.route as Record<string, unknown> | undefined
+      if (!route) return [fallback]
+      let list = parseTransitSchemes(route, 'rail')
+      list = preferRoutesByTripNote(list, options?.note)
+      const withRail = list.filter((r) =>
+        r.steps.some((s) => s.kind === 'railway'),
+      )
+      const source = withRail.length > 0 ? withRail : list
+      if (source.length === 0) return [fallback]
+      return source
+        .slice(0, MAX_ROUTE_SCHEMES)
+        .map((scheme) => railRouteFromTransit(scheme, origin, destination))
+    } catch {
+      return [fallback]
+    }
+  }
+
+  if (resolved === 'walking') {
     const url =
       `https://restapi.amap.com/v3/direction/walking?key=${encodeURIComponent(key)}` +
       `&origin=${o}&destination=${d}`
@@ -1252,7 +1573,7 @@ export async function planRoutes(
     return list
   }
 
-  if (mode === 'riding') {
+  if (resolved === 'riding') {
     const url =
       `https://restapi.amap.com/v4/direction/bicycling?key=${encodeURIComponent(key)}` +
       `&origin=${o}&destination=${d}`
@@ -1268,18 +1589,34 @@ export async function planRoutes(
     return list
   }
 
+  if (resolved === 'driving') {
+    const url =
+      `https://restapi.amap.com/v3/direction/driving?key=${encodeURIComponent(key)}` +
+      `&origin=${o}&destination=${d}&extensions=all`
+    const data = await requestJson(url)
+    if (String(data.status ?? '') !== '1') {
+      throw new Error(`驾驶路线失败：${asText(data.info) || '未知错误'}`)
+    }
+    const route = data.route as { paths?: unknown } | undefined
+    const list = parseWalkingOrRidingPaths('driving', route?.paths)
+    if (list.length === 0) throw new Error('未找到可行驾驶路线')
+    return list
+  }
+
+  // 公交 / 地铁：同一接口，strategy + 方案重排区分偏好
   const city = await reverseCity(origin, key)
+  const strategy = transitStrategyForMode(resolved)
   const url =
     `https://restapi.amap.com/v3/direction/transit/integrated?key=${encodeURIComponent(key)}` +
     `&origin=${o}&destination=${d}` +
-    `&city=${encodeURIComponent(city)}&strategy=0&nightflag=0&extensions=all`
+    `&city=${encodeURIComponent(city)}&strategy=${strategy}&nightflag=0&extensions=all`
   const data = await requestJson(url)
   if (String(data.status ?? '') !== '1') {
     throw new Error(`公交路线失败：${asText(data.info) || '未知错误'}`)
   }
   const route = data.route as Record<string, unknown> | undefined
   if (!route) throw new Error('未找到可行公交路线')
-  const list = parseTransitSchemes(route)
+  const list = parseTransitSchemes(route, resolved)
   if (list.length === 0) throw new Error('未找到可行公交路线')
   return list
 }
@@ -1289,7 +1626,8 @@ export async function planRoute(
   mode: NavMode,
   origin: UserLocation,
   destination: UserLocation,
+  options?: { note?: string },
 ): Promise<NavRoute> {
-  const list = await planRoutes(mode, origin, destination)
+  const list = await planRoutes(mode, origin, destination, options)
   return list[0]
 }

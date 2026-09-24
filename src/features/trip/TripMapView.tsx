@@ -393,13 +393,19 @@ export function TripMapView({
   }, [mapStops, selectedStopId, dotIconTick])
 
   const keyRouteSig = useMemo(() => {
-    return dayStops
+    const first = dayStops[0]
+    const firstPart = first
+      ? `first:${first.id}:${first.place.latitude.toFixed(5)},${first.place.longitude.toFixed(5)}`
+      : ''
+    const keys = dayStops
       .filter((s) => s.isKeyNode)
       .map(
         (s) =>
           `${s.id}:${s.travelMode || 'walking'}:${s.place.latitude.toFixed(5)},${s.place.longitude.toFixed(5)}`,
       )
       .join('|')
+    if (!keys) return ''
+    return `${firstPart}#${keys}`
   }, [dayStops])
 
   const [routeSegments, setRouteSegments] = useState<KeyNodeRouteSegment[]>(
@@ -433,10 +439,20 @@ export function TripMapView({
     [routeSegments],
   )
 
-  const routeDistanceByToStopId = useMemo(() => {
-    const map: Record<string, number> = {}
+  const routeLegByToStopId = useMemo(() => {
+    const map: Record<
+      string,
+      { distanceMeters: number; durationSeconds?: number }
+    > = {}
     for (const seg of routeSegments) {
-      if (seg.distanceMeters > 0) map[seg.toStopId] = seg.distanceMeters
+      if (seg.distanceMeters > 0) {
+        map[seg.toStopId] = {
+          distanceMeters: seg.distanceMeters,
+          ...(seg.durationSeconds && seg.durationSeconds > 0
+            ? { durationSeconds: seg.durationSeconds }
+            : {}),
+        }
+      }
     }
     return map
   }, [routeSegments])
@@ -688,7 +704,7 @@ export function TripMapView({
               }}
               onStopUpdated={() => onTripChanged?.()}
               onRemoveDay={handleRemoveDay}
-              routeDistanceByToStopId={routeDistanceByToStopId}
+              routeLegByToStopId={routeLegByToStopId}
               quickEditEnabled={sheetPos === 'top'}
             />
           )

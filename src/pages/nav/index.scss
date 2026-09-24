@@ -62,20 +62,25 @@
 
   &__modes {
     display: flex;
-    gap: 12px;
-    padding: 0 28px 16px;
+    gap: 8px;
+    padding: 0 20px 16px;
   }
 
   &__mode {
     flex: 1;
+    min-width: 0;
     height: 64px;
-    line-height: 64px;
-    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
     border-radius: 12px;
-    font-size: 26px;
+    font-size: 20px;
     color: #646a73;
     background: #f5f6f7;
     border: 2px solid transparent;
+    box-sizing: border-box;
 
     &--active {
       color: #1a5f4a;
@@ -83,6 +88,11 @@
       border-color: #1a5f4a;
       font-weight: 600;
     }
+  }
+
+  &__mode-text {
+    font-size: 20px;
+    line-height: 1.2;
   }
 
   &__peek {

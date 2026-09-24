@@ -464,10 +464,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: 12px 8px;
-
-    &--map {
-      gap: 12px 16px;
-    }
   }
 
   &__item {
@@ -478,12 +474,6 @@
     align-items: center;
     gap: 8px;
     padding: 12px 4px;
-  }
-
-  &__grid--map &__item {
-    width: auto;
-    min-width: 96px;
-    padding: 8px 12px;
   }
 
   &__item--locked {

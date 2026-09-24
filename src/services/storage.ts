@@ -16,7 +16,18 @@ import {
 } from '../utils/datetime'
 
 function normalizeTravelMode(raw: unknown): NavMode | undefined {
-  if (raw === 'walking' || raw === 'riding' || raw === 'transit') return raw
+  if (raw === 'transit') return 'bus'
+  if (
+    raw === 'walking' ||
+    raw === 'riding' ||
+    raw === 'driving' ||
+    raw === 'bus' ||
+    raw === 'metro' ||
+    raw === 'flight' ||
+    raw === 'rail'
+  ) {
+    return raw
+  }
   return undefined
 }
 
@@ -874,9 +885,27 @@ export function updateStopSchedule(
 }
 
 /**
+ * 将「可见子集」的新顺序织回完整 stopIds：
+ * 未出现在 partial 中的 id（如类型筛选隐藏的点）保持原槽位，避免被甩到末尾。
+ */
+function weaveStopOrder(
+  originalIds: string[],
+  partialOrderedIds: string[],
+): string[] {
+  const partialSet = new Set(partialOrderedIds)
+  const queue = [...partialOrderedIds]
+  const woven = originalIds.map((id) =>
+    partialSet.has(id) ? (queue.shift() as string) : id,
+  )
+  if (queue.length > 0) return [...woven, ...queue]
+  return woven
+}
+
+/**
  * 按分组顺序写回行程顺序（用于拖拽排序）
  * - 日内只改 stopIds 顺序，不改 time
  * - 跨日只改 dayIndex，保留 time
+ * - 若传入的是筛选后的子集，未出现的 stop 保持原相对位置（不追加到末尾）
  */
 export function reorderPlanStops(
   planId: string,
@@ -909,8 +938,7 @@ export function reorderPlanStops(
     })
   })
 
-  const orphans = plan.stopIds.filter((id) => !seen.has(id))
-  plan.stopIds = [...orderedIds, ...orphans]
+  plan.stopIds = weaveStopOrder(plan.stopIds, orderedIds)
   plan.updatedAt = ts
   writeStore(store)
   return listStopsByPlan(planId)

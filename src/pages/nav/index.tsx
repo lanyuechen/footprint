@@ -17,7 +17,6 @@ import type {
   PlaceInfo,
 } from '../../types'
 import {
-  NAV_MODES,
   NAV_STEP_COLORS,
   getLastNavMode,
   getUserLocation,
@@ -33,6 +32,12 @@ import {
   NUMBERED_DOT_DISPLAY_SIZE,
   NUMBERED_DOT_FALLBACK,
 } from '../../features/trip/numbered-dot-markers'
+import {
+  NAV_PAGE_MODES,
+  isDashNavMode,
+  navModeMeta,
+  normalizeNavMode,
+} from '../../features/trip/nav-mode'
 import './index.scss'
 
 const NAV_MAP_ID = 'nav-route-map'
@@ -45,6 +50,7 @@ const NAV_END_STYLE = { fill: '#c45c5c', stroke: '#ffffff' }
 const STEP_KIND_LABEL: Record<NavStepKind, string> = {
   walk: '步行',
   ride: '骑行',
+  drive: '驾驶',
   bus: '公交',
   metro: '地铁',
   railway: '火车',
@@ -85,6 +91,7 @@ export default function NavPage() {
 
   const seqRef = useRef(0)
   const originFixedRef = useRef(false)
+  const noteHintRef = useRef('')
 
   useEffect(() => {
     let cancelled = false
@@ -178,14 +185,21 @@ export default function NavPage() {
     setDestination(place.place)
     Taro.setNavigationBarTitle({ title: place.place.name || '路线导航' })
 
-    const modeParam = String(options?.mode || '')
-    if (
-      modeParam === 'walking' ||
-      modeParam === 'riding' ||
-      modeParam === 'transit'
-    ) {
+    const modeParam = normalizeNavMode(String(options?.mode || ''))
+    if (modeParam) {
       setMode(modeParam)
       setLastNavMode(modeParam)
+    }
+
+    const noteRaw = options?.note
+    if (typeof noteRaw === 'string' && noteRaw.trim()) {
+      try {
+        noteHintRef.current = decodeURIComponent(noteRaw)
+      } catch {
+        noteHintRef.current = noteRaw
+      }
+    } else {
+      noteHintRef.current = ''
     }
 
     const fromLat = Number(options?.fromLat)
@@ -242,10 +256,15 @@ export default function NavPage() {
     setSchemeIndex(0)
     setStepIndex(null)
 
-    planRoutes(mode, origin, {
-      latitude: destination.latitude,
-      longitude: destination.longitude,
-    })
+    planRoutes(
+      mode,
+      origin,
+      {
+        latitude: destination.latitude,
+        longitude: destination.longitude,
+      },
+      { note: noteHintRef.current || undefined },
+    )
       .then((list) => {
         if (seq !== seqRef.current) return
         setRoutes(list)
@@ -348,29 +367,30 @@ export default function NavPage() {
 
   const polyline = useMemo(() => {
     if (!route) return []
+    const dash = isDashNavMode(route.mode)
     const segmentLines = route.steps
       .map((step, index) => {
         if (!step.points || step.points.length < 2) return null
         return {
           points: step.points,
           color: step.color || NAV_STEP_COLORS[index % NAV_STEP_COLORS.length],
-          width: 6,
-          dottedLine: false,
-          arrowLine: true,
+          width: dash ? 5 : 6,
+          dottedLine: dash,
+          arrowLine: !dash,
         }
       })
       .filter((item): item is NonNullable<typeof item> => !!item)
 
-    if (segmentLines.length > 0) return segmentLines
+    if (segmentLines.length > 0 && !dash) return segmentLines
 
     if (route.points.length < 2) return []
     return [
       {
         points: route.points,
-        color: '#1a5f4a',
-        width: 6,
-        dottedLine: false,
-        arrowLine: true,
+        color: dash ? navModeMeta(route.mode).color : '#1a5f4a',
+        width: dash ? 5 : 6,
+        dottedLine: dash,
+        arrowLine: !dash,
       },
     ]
   }, [route])
@@ -412,18 +432,26 @@ export default function NavPage() {
           </View>
 
           <View className='nav__modes'>
-            {NAV_MODES.map((item) => (
-              <View
-                key={item.id}
-                className={`nav__mode${mode === item.id ? ' nav__mode--active' : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onSelectMode(item.id)
-                }}
-              >
-                {item.label}
-              </View>
-            ))}
+            {NAV_PAGE_MODES.map((item) => {
+              const ModeIcon = item.Icon
+              const active = mode === item.id
+              return (
+                <View
+                  key={item.id}
+                  className={`nav__mode${active ? ' nav__mode--active' : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onSelectMode(item.id)
+                  }}
+                >
+                  <ModeIcon
+                    size={14}
+                    color={active ? item.color : '#646a73'}
+                  />
+                  <Text className='nav__mode-text'>{item.label}</Text>
+                </View>
+              )
+            })}
           </View>
 
           {!sheet.showSheetBody && (
