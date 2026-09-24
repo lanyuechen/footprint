@@ -2,6 +2,7 @@ export default defineAppConfig({
   pages: [
     'pages/index/index',
     'pages/plan-edit/index',
+    'pages/plan-detail/index',
     'pages/trip-edit/index',
     'pages/stop-edit/index',
     'pages/nav/index',

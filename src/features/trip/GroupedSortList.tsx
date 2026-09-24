@@ -42,6 +42,8 @@ export type GroupedSortListProps<T extends { id: string }> = {
   onChange: (groups: SortGroup<T>[]) => void
   /** 内容高度变化时传入（如展开详情），触发重新测高 */
   layoutKey?: string | number
+  /** 仅重绘条目（如选中高亮），不触发测高/滚动恢复 */
+  paintKey?: string | number
   /** 点击条目（非拖拽） */
   onItemClick?: (id: string) => void
   /** 开始拖拽（用于收起展开等） */
@@ -382,6 +384,10 @@ export function GroupedSortList<T extends { id: string }>(
   const [enterAnim, setEnterAnim] = useState(true)
   /** 仅程序化改滚动时递增，避免滚动过程 setState 导致卡顿 */
   const [scrollApplyNonce, setScrollApplyNonce] = useState(0)
+  /** 仅外部定位（如点地图）用动画；拖拽/测高恢复保持瞬间到位 */
+  const [scrollWithAnim, setScrollWithAnim] = useState(false)
+  const scrollWithAnimRef = useRef(false)
+  const scrollApplyNonceRef = useRef(0)
 
   // —— 触摸回调用的镜像（避免闭包过期）——
   const activeIdRef = useRef<string | null>(null)
@@ -429,6 +435,10 @@ export function GroupedSortList<T extends { id: string }>(
   viewportHRef.current = viewportH
   const scrollToSeqRef = useRef(props.scrollToSeq)
   scrollToSeqRef.current = props.scrollToSeq
+  const scrollToIdRef = useRef(props.scrollToId)
+  scrollToIdRef.current = props.scrollToId
+  /** 外部 scrollTo 生效代数；测高恢复时若代数已变则跟到目标项 */
+  const intentionalScrollGenRef = useRef(0)
 
   const dragging = !!activeId
 
@@ -440,9 +450,49 @@ export function GroupedSortList<T extends { id: string }>(
     pendingDragYRef.current = null
   }
 
-  const applyProgramScroll = (top: number) => {
-    scrollTopRef.current = top
-    setScrollApplyNonce((n) => n + 1)
+  const applyProgramScroll = (
+    top: number,
+    opts?: { animate?: boolean },
+  ) => {
+    const animate = opts?.animate === true
+    const bumpTo = (nextTop: number) => {
+      scrollTopRef.current = nextTop
+      scrollApplyNonceRef.current += 1
+      setScrollApplyNonce(scrollApplyNonceRef.current)
+    }
+
+    if (!animate) {
+      if (scrollWithAnimRef.current) {
+        scrollWithAnimRef.current = false
+        setScrollWithAnim(false)
+      }
+      bumpTo(top)
+      return
+    }
+
+    // 微信：scroll-with-animation 从 false→true 且同帧改 scroll-top 时首次不播动画；
+    // 且 scroll-top 首次从非受控变为受控也不动画。分步：钉住受控 → 开动画 → 再改位置。
+    const armThenScroll = () => {
+      if (!scrollWithAnimRef.current) {
+        scrollWithAnimRef.current = true
+        setScrollWithAnim(true)
+        Taro.nextTick(() => bumpTo(top))
+        return
+      }
+      bumpTo(top)
+    }
+
+    if (scrollApplyNonceRef.current === 0) {
+      if (scrollWithAnimRef.current) {
+        scrollWithAnimRef.current = false
+        setScrollWithAnim(false)
+      }
+      bumpTo(scrollTopRef.current)
+      Taro.nextTick(() => armThenScroll())
+      return
+    }
+
+    armThenScroll()
   }
 
   /** 跟手过程中计算插入预览；仅结构变化时 bump previewTick */
@@ -538,7 +588,7 @@ export function GroupedSortList<T extends { id: string }>(
     })
     return map
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout.items, props.layoutKey, flatIds, props.elevatedId])
+  }, [layout.items, props.layoutKey, props.paintKey, flatIds, props.elevatedId])
 
   const headerContentById = useMemo(() => {
     const map = new Map<string, ReactNode>()
@@ -654,6 +704,7 @@ export function GroupedSortList<T extends { id: string }>(
     /** 备注/名称等改 layoutKey 时微信 scroll-view 常被重置到顶，先记下再恢复 */
     const savedScroll = scrollTopRef.current
     const seqAtStart = scrollToSeqRef.current
+    const genAtStart = intentionalScrollGenRef.current
     const run = () => {
       if (!alive) return
       measureHeights()
@@ -668,6 +719,18 @@ export function GroupedSortList<T extends { id: string }>(
       // 期间若有外部点选滚动，不要抢回旧位置
       if (scrollToSeqRef.current !== seqAtStart) return
       const maxScroll = Math.max(0, areaHRef.current - viewportHRef.current)
+      // 同批：scrollTo 已在测高过程中执行过 → 跟到目标，勿用旧 scroll 盖回
+      if (intentionalScrollGenRef.current !== genAtStart) {
+        const targetId = scrollToIdRef.current
+        const item = targetId
+          ? layoutByIdRef.current.get(targetId)
+          : undefined
+        if (item) {
+          const top = Math.min(maxScroll, Math.max(0, item.baseY))
+          applyProgramScroll(nudgeScroll(top), { animate: true })
+          return
+        }
+      }
       const top = Math.min(maxScroll, Math.max(0, savedScroll))
       applyProgramScroll(nudgeScroll(top))
     }, restoreAt)
@@ -692,9 +755,10 @@ export function GroupedSortList<T extends { id: string }>(
         if (attempt < 8) setTimeout(() => run(attempt + 1), 50)
         return
       }
+      intentionalScrollGenRef.current += 1
       const maxScroll = Math.max(0, areaHRef.current - viewportHRef.current)
       const top = Math.min(maxScroll, Math.max(0, item.baseY))
-      applyProgramScroll(nudgeScroll(top))
+      applyProgramScroll(nudgeScroll(top), { animate: true })
     }
 
     Taro.nextTick(() => run())
@@ -1039,7 +1103,7 @@ export function GroupedSortList<T extends { id: string }>(
               ? scrollTopRef.current + scrollApplyNonce * 0
               : undefined
         }
-        scrollWithAnimation={false}
+        scrollWithAnimation={scrollWithAnim}
         onScroll={(e) => {
           if (dragLockScrollRef.current != null) return
           scrollTopRef.current = Number(e.detail.scrollTop) || 0

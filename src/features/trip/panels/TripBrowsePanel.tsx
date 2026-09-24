@@ -424,7 +424,8 @@ export function TripBrowseList({
         footerSlot={<View />}
         footerHeight={100}
         elevatedId={menuId || undefined}
-        layoutKey={`${selectedStopId}|${dayStops
+        paintKey={selectedStopId}
+        layoutKey={`${dayStops
           .map(
             (s) =>
               [
