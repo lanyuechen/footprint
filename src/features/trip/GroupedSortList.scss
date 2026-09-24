@@ -437,6 +437,14 @@
     line-height: inherit;
   }
 
+  &__note-warn {
+    display: inline;
+    font-size: inherit;
+    line-height: inherit;
+    color: #d97706;
+    font-weight: 500;
+  }
+
   &__actions {
     flex-shrink: 0;
     display: flex;

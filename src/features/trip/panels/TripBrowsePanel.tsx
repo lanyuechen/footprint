@@ -16,6 +16,7 @@ import {
   matchPlaceTypeOption,
 } from '../place-axis'
 import { navModeMeta, normalizeNavMode } from '../nav-mode'
+import { parseNoteForDisplay } from '../note-display'
 import { useDropdownAnim } from '../../../hooks/useDropdownAnim'
 import { useKeyboardHeight } from '../../../hooks/useKeyboardHeight'
 
@@ -103,6 +104,7 @@ function TripStopCard({
 }) {
   const timeLabel = stop.time?.trim() || ''
   const note = stop.note?.trim() || ''
+  const noteParts = note ? parseNoteForDisplay(note) : []
   const { mounted, shown } = useDropdownAnim(menuOpen)
   const canQuickEdit = quickEditEnabled !== false
   const keyTravel = stop.isKeyNode ? keyNodeTravelMeta(stop.travelMode) : null
@@ -279,7 +281,17 @@ function TripStopCard({
                   onPickNote(stop)
                 }}
               >
-                {note || '暂无备注'}
+                {note
+                  ? noteParts.map((part, i) =>
+                      part.type === 'warn' ? (
+                        <Text key={`w-${i}`} className='gsl-card__note-warn'>
+                          {part.text}
+                        </Text>
+                      ) : (
+                        <Text key={`t-${i}`}>{part.text}</Text>
+                      ),
+                    )
+                  : '暂无备注'}
               </Text>
             </View>
           </View>
@@ -409,6 +421,8 @@ export function TripBrowseList({
       <GroupedSortList
         groups={sortGroups}
         headerHeight={0}
+        footerSlot={<View />}
+        footerHeight={100}
         elevatedId={menuId || undefined}
         layoutKey={`${selectedStopId}|${dayStops
           .map(

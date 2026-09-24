@@ -427,6 +427,8 @@ export function GroupedSortList<T extends { id: string }>(
   fallbackHRef.current = fallbackH
   headerHRef.current = headerH
   viewportHRef.current = viewportH
+  const scrollToSeqRef = useRef(props.scrollToSeq)
+  scrollToSeqRef.current = props.scrollToSeq
 
   const dragging = !!activeId
 
@@ -649,6 +651,9 @@ export function GroupedSortList<T extends { id: string }>(
   useEffect(() => {
     if (dragging) return
     let alive = true
+    /** 备注/名称等改 layoutKey 时微信 scroll-view 常被重置到顶，先记下再恢复 */
+    const savedScroll = scrollTopRef.current
+    const seqAtStart = scrollToSeqRef.current
     const run = () => {
       if (!alive) return
       measureHeights()
@@ -656,9 +661,20 @@ export function GroupedSortList<T extends { id: string }>(
     }
     run()
     const timers = MEASURE_RETRY_MS.map((ms) => setTimeout(run, ms))
+    const restoreAt =
+      (MEASURE_RETRY_MS[MEASURE_RETRY_MS.length - 1] || 0) + 32
+    const restoreTimer = setTimeout(() => {
+      if (!alive || activeIdRef.current) return
+      // 期间若有外部点选滚动，不要抢回旧位置
+      if (scrollToSeqRef.current !== seqAtStart) return
+      const maxScroll = Math.max(0, areaHRef.current - viewportHRef.current)
+      const top = Math.min(maxScroll, Math.max(0, savedScroll))
+      applyProgramScroll(nudgeScroll(top))
+    }, restoreAt)
     return () => {
       alive = false
       timers.forEach(clearTimeout)
+      clearTimeout(restoreTimer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flatIds, dragging, props.layoutKey])
